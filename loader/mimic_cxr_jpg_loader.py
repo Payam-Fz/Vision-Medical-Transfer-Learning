@@ -9,12 +9,27 @@ from PIL import Image
 metadata_csv_file = 'mimic-cxr-2.0.0-metadata.csv.gz'
 split_csv_file = 'mimic-cxr-2.0.0-split.csv.gz'
 chexpert_csv_file = 'mimic-cxr-2.0.0-chexpert.csv.gz'
+        
+# Turn labels into multi-hot-encoding
+# 1.0 : The label was positively mentioned in the associated study, and is present in one or more of the corresponding images
+# 0.0 : The label was negatively mentioned in the associated study, and therefore should not be present in any of the corresponding images
+# -1.0 : The label was either:
+#   (1) mentioned with uncertainty in the report, and therefore may or may not be present to some degree in the corresponding image, or
+#   (2) mentioned with ambiguous language in the report and it is unclear if the pathology exists or not
+# Missing (empty element) : No mention of the label was made in the report
+label_mapping = {'1': 1, '-1': 0, '0': 0, '': 0}
+
+# Order matters
+label_columns = ['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Enlarged Cardiomediastinum',
+                'Fracture', 'Lung Lesion', 'Lung Opacity', 'No Finding', 'Pleural Effusion',
+                'Pleural Other', 'Pneumonia', 'Pneumothorax', 'Support Devices']
 
 
 class MIMIC_CXR_JPG_Loader:
     # split_sizes is of form: {'train': int, 'validate': int, 'test': int}
     def __init__(self, data_folder, csv_folder, split_sizes):
         self.data_folder = data_folder
+        self.csv_folder = csv_folder
         self.split_sizes = split_sizes
         self.load()
         
@@ -25,30 +40,18 @@ class MIMIC_CXR_JPG_Loader:
         image = np.array(image) / 255.0  # Normalize to [0, 1]
         return image
 
-    def _unify_labels(row):
-        # Map labels to numerical values (1.0, -1.0, 0.0)
-        label_mapping = {'1.0': 1.0, '-1.0': -1.0, '0.0': 0.0, 'missing': np.nan}
+    def _load_label(self, subject_id, study_id):
+        label_df = self.label_csv[(self.label_csv['subject_id'] == subject_id) & (self.label_csv['study_id'] == study_id)].iloc[:, 2:]
+        assert(label_df.shape[0] == 1)
         
-        # Extract label columns from the row
-        label_columns = ['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Enlarged Cardiomediastinum',
-                        'Fracture', 'Lung Lesion', 'Lung Opacity', 'No Finding', 'Pleural Effusion',
-                        'Pleural Other', 'Pneumonia', 'Pneumothorax', 'Support Devices']
-        
-        # Convert labels to numerical values
-        labels = [label_mapping[str(row[col])] for col in label_columns]
-        
-        # One-hot encode labels
-        one_hot_labels = tf.keras.utils.to_categorical(labels, num_classes=len(label_columns))
-        
-        return one_hot_labels
-    
-    def _preprocess_labels(self, subject_id, study_id):
-        labels = self.label_csv[(self.label_csv['subject_id'] == subject_id) & (self.label_csv['study_id'] == study_id)].iloc[:, 2:]
-        return labels.values.flatten()
+        # One-hot encode labels (using explicit column names to prevent errors due to reordered columns)
+        multi_hot_labels = [label_mapping[str(labels_df.loc[0, col])] for col in label_columns]
+        # one_hot_labels = tf.keras.utils.to_categorical(labels, num_classes=len(label_columns))
+        return multi_hot_labels
 
     def _preprocess_image_label(self, row):
         image = self._load_image(row['subject_id'], row['study_id'], row['dicom_id'])
-        labels = self._preprocess_labels(row['subject_id'], row['study_id'])
+        labels = self._load_label(row['subject_id'], row['study_id'])
         return image, labels
     
     def load(self, batch_size=32):
@@ -62,28 +65,18 @@ class MIMIC_CXR_JPG_Loader:
         train_data = grouped_data[grouped_data['split'] == 'train'].sample(n=self.split_size['train'], random_state=42)
         val_data = grouped_data[grouped_data['split'] == 'validate'].sample(n=self.split_size['validate'], random_state=42)
         test_data = grouped_data[grouped_data['split'] == 'test'].sample(n=self.split_size['test'], random_state=42)
-
         
+        # Apply data preprocessing functions
+        train_dataset = train_dataset.map(self._preprocess_image_label)
+        val_dataset = val_dataset.map(self._preprocess_image_label)
+        test_dataset = test_dataset.map(self._preprocess_image_label)
         
-        # Define functions for loading and preprocessing data
-        def load_and_preprocess_train(row):
-            return self._preprocess_image_label(row)
-        
-        def load_and_preprocess_test(row):
-            return self._preprocess_image_label(row)
-        
-        def load_and_preprocess_val(row):
-            return self._preprocess_image_label(row)
+        # ISSUE: map is loading the imges
         
         # Create TensorFlow datasets
         train_dataset = tf.data.Dataset.from_tensor_slices(train_data.to_dict(orient='records'))
         val_dataset = tf.data.Dataset.from_tensor_slices(val_data.to_dict(orient='records'))
         test_dataset = tf.data.Dataset.from_tensor_slices(test_data.to_dict(orient='records'))
-        
-        # Apply data preprocessing functions
-        train_dataset = train_dataset.map(load_and_preprocess_train)
-        val_dataset = val_dataset.map(load_and_preprocess_val)
-        test_dataset = test_dataset.map(load_and_preprocess_test)
         
         # Define dataset information
         dataset_info = tf.data.Dataset.from_tensor_slices(merged_data.to_dict(orient='records'))
@@ -92,7 +85,7 @@ class MIMIC_CXR_JPG_Loader:
         return train_dataset.batch(batch_size), val_dataset.batch(batch_size), test_dataset.batch(batch_size), dataset_info
 
 # Usage example
-data_folder = '/path/to/your/data/folder'
+data_folder = '../data/physionet.org/files/mimic-cxr-jpg/2.0.0/files'
 metadata_csv = '/path/to/your/mimic-cxr-2.0.0-metadata.csv.gz'
 split_csv = '/path/to/your/mimic-cxr-2.0.0-split.csv.gz'
 label_csv = '/path/to/your/mimic-cxr-2.0.0-chexpert.csv.gz'

@@ -1,0 +1,1 @@
+/ubc/cs/research/shield/datasets/MIMIC-CXR-JPG/physionet.org
