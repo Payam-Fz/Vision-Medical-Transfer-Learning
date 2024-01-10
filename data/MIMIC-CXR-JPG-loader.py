@@ -12,21 +12,35 @@ chexpert_csv_file = 'mimic-cxr-2.0.0-chexpert.csv.gz'
 
 
 class MIMIC_CXR_JPG_Loader:
-    def __init__(self, data_folder, csv_folder, split_csv, label_csv):
+    # split_sizes is of form: {'train': int, 'validate': int, 'test': int}
+    def __init__(self, data_folder, csv_folder, split_sizes):
         self.data_folder = data_folder
-        self.metadata_csv = pd.read_csv(os.path.join(csv_folder, metadata_csv_file))
-        self.split_csv = pd.read_csv(os.path.join(csv_folder, split_csv_file))
-        self.label_csv = pd.read_csv(os.path.join(csv_folder, chexpert_csv_file))
+        self.split_sizes = split_sizes
+        self.load()
         
-    def _load_image(self, subject_id, study_id, dicom_id):  # TODO: usage
-        # Implement logic to load images from the provided data_folder
-        # You can use any image loading library, e.g., PIL or OpenCV
-
-        image_path = os.path.join(self.data_folder, dicom_id + ".jpg")
+    def _load_image(self, subject_id, study_id, dicom_id):
+        image_path = os.path.join(self.data_folder, subject_id[:3], subject_id, study_id, dicom_id + ".jpg")
         image = Image.open(image_path)
         image = image.convert("RGB")
         image = np.array(image) / 255.0  # Normalize to [0, 1]
         return image
+
+    def _unify_labels(row):
+        # Map labels to numerical values (1.0, -1.0, 0.0)
+        label_mapping = {'1.0': 1.0, '-1.0': -1.0, '0.0': 0.0, 'missing': np.nan}
+        
+        # Extract label columns from the row
+        label_columns = ['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Enlarged Cardiomediastinum',
+                        'Fracture', 'Lung Lesion', 'Lung Opacity', 'No Finding', 'Pleural Effusion',
+                        'Pleural Other', 'Pneumonia', 'Pneumothorax', 'Support Devices']
+        
+        # Convert labels to numerical values
+        labels = [label_mapping[str(row[col])] for col in label_columns]
+        
+        # One-hot encode labels
+        one_hot_labels = tf.keras.utils.to_categorical(labels, num_classes=len(label_columns))
+        
+        return one_hot_labels
     
     def _preprocess_labels(self, subject_id, study_id):
         labels = self.label_csv[(self.label_csv['subject_id'] == subject_id) & (self.label_csv['study_id'] == study_id)].iloc[:, 2:]
@@ -38,12 +52,18 @@ class MIMIC_CXR_JPG_Loader:
         return image, labels
     
     def load(self, batch_size=32):
-        # Merge metadata with split information
-        merged_data = pd.merge(self.metadata_csv, self.split_csv, on=['dicom_id', 'study_id', 'subject_id'])
+        self.label_csv = pd.read_csv(os.path.join(self.csv_folder, chexpert_csv_file))
+        metadata_csv = pd.read_csv(os.path.join(self.csv_folder, metadata_csv_file))
+        split_csv = pd.read_csv(os.path.join(self.csv_folder, split_csv_file))
+        merged_metadata = pd.merge(metadata_csv, split_csv, on=['dicom_id', 'study_id', 'subject_id'])
+
+        # Split data into train, validation, and test sets and apply sampling based on split_size
+        grouped_data = merged_metadata.groupby('split', group_keys=False)
+        train_data = grouped_data[grouped_data['split'] == 'train'].sample(n=self.split_size['train'], random_state=42)
+        val_data = grouped_data[grouped_data['split'] == 'validate'].sample(n=self.split_size['validate'], random_state=42)
+        test_data = grouped_data[grouped_data['split'] == 'test'].sample(n=self.split_size['test'], random_state=42)
+
         
-        # Split data into train, validation, and test sets
-        train_data, test_data = train_test_split(merged_data, test_size=0.1, stratify=merged_data['split'])
-        train_data, val_data = train_test_split(train_data, test_size=0.1, stratify=train_data['split'])
         
         # Define functions for loading and preprocessing data
         def load_and_preprocess_train(row):
