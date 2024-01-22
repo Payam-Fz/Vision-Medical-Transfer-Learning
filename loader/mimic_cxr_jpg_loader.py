@@ -1,4 +1,5 @@
 import tensorflow as tf
+# tf.compat.v1.disable_eager_execution()
 import pandas as pd
 import numpy as np
 import os
@@ -6,8 +7,9 @@ import gzip
 from sklearn.model_selection import train_test_split
 from PIL import Image
 
-data_folder = '../data/physionet.org/files/mimic-cxr-jpg/2.0.0/files'
-csv_folder = '../data/physionet.org/files/mimic-cxr-jpg/2.0.0'
+root = '/mnt/samba/research/shield/projects/payamfz/medical-ssl-segmentation/'
+data_folder = root + 'data/physionet.org/files/mimic-cxr-jpg/2.0.0/files'
+csv_folder = root + 'data/physionet.org/files/mimic-cxr-jpg/2.0.0'
 metadata_csv_file = 'mimic-cxr-2.0.0-metadata.csv.gz'
 split_csv_file = 'mimic-cxr-2.0.0-split.csv.gz'
 chexpert_csv_file = 'mimic-cxr-2.0.0-chexpert.csv.gz'
@@ -19,7 +21,7 @@ chexpert_csv_file = 'mimic-cxr-2.0.0-chexpert.csv.gz'
 #   (1) mentioned with uncertainty in the report, and therefore may or may not be present to some degree in the corresponding image, or
 #   (2) mentioned with ambiguous language in the report and it is unclear if the pathology exists or not
 # Missing (empty element) : No mention of the label was made in the report
-label_mapping = {'1': 1, '-1': 0, '0': 0, '': 0}
+label_mapping = {'1.0': 1, '-1.0': 0, '0.0': 0, '': 0}
 
 # Order matters
 label_columns = ['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Enlarged Cardiomediastinum',
@@ -41,41 +43,45 @@ class MIMIC_CXR_JPG_Loader:
     #     return image
         
     def _load_image(self, subject_id, study_id, dicom_id):
-        print('subject_id', subject_id)
-        image_path = os.path.join(data_folder, subject_id[:3], subject_id, study_id, dicom_id + ".jpg")
+        subject_id_str = 'p' + subject_id
+        study_id_str = 's' + study_id
+        grouped_folder = tf.strings.substr( subject_id_str, 0, 3, unit='BYTE', name=None )
+        image_path = data_folder + os.sep + grouped_folder + os.sep + subject_id_str + os.sep + study_id_str + os.sep + dicom_id + ".jpg"
         image = tf.io.read_file(image_path)
-        image = tf.image.decode_image(image, channels=1, dtype=tf.float32)
+        image = tf.image.decode_image(image, channels=3, dtype=tf.float32)
         return image
 
     def _load_label(self, subject_id, study_id):
-        label_df = self.label_csv[(self.label_csv['subject_id'] == subject_id) & (self.label_csv['study_id'] == study_id)].iloc[:, 2:]
+        subject_id_str = subject_id.numpy().decode('utf-8')
+        study_id_str = study_id.numpy().decode('utf-8')
+        label_df = self.label_csv[(self.label_csv['subject_id'] == subject_id_str) & (self.label_csv['study_id'] == study_id_str)].iloc[:, 2:]
         assert(label_df.shape[0] == 1)
         # Multi-hot encode labels (using explicit column names to prevent errors due to reordered columns)
-        multi_hot_labels = [label_mapping[str(label_df.loc[0, col])] for col in label_columns]
-        # one_hot_labels = tf.keras.utils.to_categorical(labels, num_classes=len(label_columns))
+        multi_hot_labels = [label_mapping[label_df.iloc[0][col]] for col in label_columns]
         return multi_hot_labels
 
     def _preprocess_image_label(self, row):
-        print('row:', row)
-        with tf.compat.v1.Session() as sess:
-            _row = sess.run(row)
-        
-        image = self._load_image(_row['subject_id'], _row['study_id'], _row['dicom_id'])
-        label = self._load_label(_row['subject_id'], _row['study_id'])
-        info = _row
+        subject_id = row[0]
+        study_id = row[1]
+        dicom_id = row[2]
+        image = self._load_image(subject_id, study_id, dicom_id)
+        label = self._load_label(subject_id, study_id)
+        info = [subject_id, study_id, dicom_id]
         return image, label, info
     
     def load(self):
         # Read .csv info files
         with gzip.open(os.path.join(csv_folder, chexpert_csv_file), 'rt') as file:
-            self.label_csv = pd.read_csv(file)
+            label_csv = pd.read_csv(file, encoding='utf-8', dtype='string')
+            self.label_csv = label_csv.fillna('')
         with gzip.open(os.path.join(csv_folder, metadata_csv_file), 'rt') as file:
-            metadata_csv = pd.read_csv(file)
+            metadata_csv = pd.read_csv(file, encoding='utf-8', dtype='string')
         with gzip.open(os.path.join(csv_folder, split_csv_file), 'rt') as file:
-            split_csv = pd.read_csv(file)
+            split_csv = pd.read_csv(file, encoding='utf-8', dtype='string')
             
         # Merge the data
         merged_data = pd.merge(metadata_csv, split_csv, on=['dicom_id', 'study_id', 'subject_id'])
+        merged_data = merged_data.fillna('')
         self.metadata['total_size'] = merged_data.shape[0] 
 
         # Group data by 'split' column and get sizes
@@ -97,11 +103,12 @@ class MIMIC_CXR_JPG_Loader:
         self.metadata['split_size_frac'] = {key: value / self.metadata['total_size'] for key, value in self.metadata['split_size'].items()}
         
         # Create TensorFlow datasets
-        train_dataset = tf.data.Dataset.from_tensor_slices(train_split.fillna('').to_dict(orient='list'))
-        val_dataset = tf.data.Dataset.from_tensor_slices(val_split.fillna('').to_dict(orient='list'))
-        test_dataset = tf.data.Dataset.from_tensor_slices(test_split.fillna('').to_dict(orient='list'))
-        train_dataset = train_dataset.map(self._preprocess_image_label)
-        val_dataset = val_dataset.map(self._preprocess_image_label)
-        test_dataset = test_dataset.map(self._preprocess_image_label)
+        req_columns = ['subject_id', 'study_id', 'dicom_id']
+        train_dataset = tf.data.Dataset.from_tensor_slices(train_split[req_columns])
+        val_dataset = tf.data.Dataset.from_tensor_slices(val_split[req_columns])
+        test_dataset = tf.data.Dataset.from_tensor_slices(test_split[req_columns])
+        train_dataset = train_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.int32, tf.string]))
+        val_dataset = val_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.int32, tf.string]))
+        test_dataset = test_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.int32, tf.string]))
         
         return train_dataset, val_dataset, test_dataset
