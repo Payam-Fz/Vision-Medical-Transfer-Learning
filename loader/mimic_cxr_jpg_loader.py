@@ -7,9 +7,8 @@ import gzip
 from sklearn.model_selection import train_test_split
 from PIL import Image
 
-root = '/mnt/samba/research/shield/projects/payamfz/medical-ssl-segmentation/'
-data_folder = root + 'data/physionet.org/files/mimic-cxr-jpg/2.0.0/files'
-csv_folder = root + 'data/physionet.org/files/mimic-cxr-jpg/2.0.0'
+data_folder = 'data/physionet.org/files/mimic-cxr-jpg/2.0.0/files'
+csv_folder = 'data/physionet.org/files/mimic-cxr-jpg/2.0.0'
 metadata_csv_file = 'mimic-cxr-2.0.0-metadata.csv.gz'
 split_csv_file = 'mimic-cxr-2.0.0-split.csv.gz'
 chexpert_csv_file = 'mimic-cxr-2.0.0-chexpert.csv.gz'
@@ -31,22 +30,16 @@ label_columns = ['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Enlar
 
 class MIMIC_CXR_JPG_Loader:
     # split_size is of form: {'train': int, 'validate': int, 'test': int}
-    def __init__(self, split_size={}):
+    def __init__(self, split_size={}, project_dir='../'):
         self._in_split_size = split_size
         self.metadata = {}
-        
-    # def _load_image(self, subject_id, study_id, dicom_id):
-    #     image_path = os.path.join(self.data_folder, subject_id[:3], subject_id, study_id, dicom_id + ".jpg")
-    #     image = Image.open(image_path)
-    #     image = image.convert("RGB")
-    #     image = np.array(image) / 255.0  # Normalize to [0, 1]
-    #     return image
+        self.project_dir = project_dir
         
     def _load_image(self, subject_id, study_id, dicom_id):
         subject_id_str = 'p' + subject_id
         study_id_str = 's' + study_id
         grouped_folder = tf.strings.substr( subject_id_str, 0, 3, unit='BYTE', name=None )
-        image_path = data_folder + os.sep + grouped_folder + os.sep + subject_id_str + os.sep + study_id_str + os.sep + dicom_id + ".jpg"
+        image_path = self.project_dir + os.sep + data_folder + os.sep + grouped_folder + os.sep + subject_id_str + os.sep + study_id_str + os.sep + dicom_id + ".jpg"
         image = tf.io.read_file(image_path)
         image = tf.image.decode_image(image, channels=3, dtype=tf.float32)
         return image
@@ -71,12 +64,12 @@ class MIMIC_CXR_JPG_Loader:
     
     def load(self):
         # Read .csv info files
-        with gzip.open(os.path.join(csv_folder, chexpert_csv_file), 'rt') as file:
+        with gzip.open(os.path.join(self.project_dir, csv_folder, chexpert_csv_file), 'rt') as file:
             label_csv = pd.read_csv(file, encoding='utf-8', dtype='string')
             self.label_csv = label_csv.fillna('')
-        with gzip.open(os.path.join(csv_folder, metadata_csv_file), 'rt') as file:
+        with gzip.open(os.path.join(self.project_dir, csv_folder, metadata_csv_file), 'rt') as file:
             metadata_csv = pd.read_csv(file, encoding='utf-8', dtype='string')
-        with gzip.open(os.path.join(csv_folder, split_csv_file), 'rt') as file:
+        with gzip.open(os.path.join(self.project_dir, csv_folder, split_csv_file), 'rt') as file:
             split_csv = pd.read_csv(file, encoding='utf-8', dtype='string')
             
         # Merge the data
@@ -101,6 +94,7 @@ class MIMIC_CXR_JPG_Loader:
 
         self.metadata['split_size'] = { 'train': train_split.shape[0], 'validate': val_split.shape[0], 'test': test_split.shape[0] }
         self.metadata['split_size_frac'] = {key: value / self.metadata['total_size'] for key, value in self.metadata['split_size'].items()}
+        self.metadata['num_classes'] = len(label_columns)
         
         # Create TensorFlow datasets
         req_columns = ['subject_id', 'study_id', 'dicom_id']
