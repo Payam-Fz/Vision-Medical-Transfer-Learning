@@ -366,6 +366,12 @@ def gaussian_blur(image, kernel_size, sigma, padding='SAME'):
     blurred = tf.squeeze(blurred, axis=0)
   return blurred
 
+def handle_crop(image, height, width, crop):
+  if crop == 'Random':
+    image = random_crop_with_resize(image, height, width)
+  elif crop == 'Center':
+    image = center_crop(image, height, width, crop_proportion=CROP_PROPORTION)
+  return image
 
 def random_crop_with_resize(image, height, width, p=1.0):
   """Randomly crop and resize an image.
@@ -449,7 +455,7 @@ def preprocess_for_train(image,
                          height,
                          width,
                          color_distort=True,
-                         crop=True,
+                         crop='Random', #@Param ['None', 'Random', 'Center']
                          flip=True,
                          impl='simclrv2'):
   """Preprocesses the given image for training.
@@ -467,8 +473,7 @@ def preprocess_for_train(image,
   Returns:
     A preprocessed image `Tensor`.
   """
-  if crop:
-    image = random_crop_with_resize(image, height, width)
+  image = handle_crop(image, height, width, crop)
   if flip:
     image = tf.image.random_flip_left_right(image)
   if color_distort:
@@ -478,7 +483,7 @@ def preprocess_for_train(image,
   return image
 
 
-def preprocess_for_eval(image, height, width, crop=True):
+def preprocess_for_eval(image, height, width, crop='Center'): #@Param ['None', 'Random', 'Center']
   """Preprocesses the given image for evaluation.
 
   Args:
@@ -490,15 +495,14 @@ def preprocess_for_eval(image, height, width, crop=True):
   Returns:
     A preprocessed image `Tensor`.
   """
-  if crop:
-    image = center_crop(image, height, width, crop_proportion=CROP_PROPORTION)
+  image = handle_crop(image, height, width, crop)
   image = tf.reshape(image, [height, width, 3])
   image = tf.clip_by_value(image, 0., 1.)
   return image
 
 
 def preprocess_image(image, height, width, is_training=False,
-                     color_distort=True, test_crop=True):
+                     color_distort=True, crop='Random'): #@Param ['None', 'Random', 'Center']
   """Preprocesses the given image.
 
   Args:
@@ -515,6 +519,6 @@ def preprocess_image(image, height, width, is_training=False,
   """
   image = tf.image.convert_image_dtype(image, dtype=tf.float32)
   if is_training:
-    return preprocess_for_train(image, height, width, color_distort)
+    return preprocess_for_train(image, height, width, color_distort, crop)
   else:
-    return preprocess_for_eval(image, height, width, test_crop)
+    return preprocess_for_eval(image, height, width, crop)

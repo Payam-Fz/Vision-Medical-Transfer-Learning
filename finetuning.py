@@ -40,8 +40,8 @@ from lars_optimizer import LARSOptimizer
 
 #------------------- PARAMS -------------------#
 DATASET = "MIMIC-CXR" #@param ["Chexpert", "Camelyon", "MIMIC-CXR", "Noise"]
-BASE_MODEL = "SimCLR" #@param ["SimCLR", "DINO", "REMEDIS"]
-BATCH_SIZE = 64
+BASE_MODEL = "REMEDIS" #@param ["SimCLR", "DINO", "REMEDIS"]
+BATCH_SIZE = 16
 IMAGE_SIZE = (448,448)
 NUM_SAMPLES = 400
 LEARNING_RATE = 0.1
@@ -62,7 +62,7 @@ def _preprocess(x, y, info=None):
   out = {}
   out['image'] = preprocess_image(
       x, *IMAGE_SIZE,
-      is_training=False, color_distort=False)
+      is_training=True, color_distort=False, crop=False)
   out['label'] = y
   out['info'] = info
   return out
@@ -105,9 +105,9 @@ elif DATASET == 'MIMIC-CXR':
 else:
   raise Exception('The Data Type specified does not have data loading defined.')
 
-
-x = train_tfds.map(_preprocess).batch(BATCH_SIZE)
-x = tf.data.make_one_shot_iterator(x).get_next()
+train_tfds = train_tfds.shuffle(buffer_size=SHUFFLE_BUFFER_SIZE)
+batched_train_tfds = train_tfds.map(_preprocess).batch(BATCH_SIZE)
+next_batch = tf.data.make_one_shot_iterator(batched_train_tfds).get_next()
 
 
 #------------------- LOAD MODLES -------------------#
@@ -129,7 +129,7 @@ except:
   raise
 
 #------------------- SETUP TRAINING HEAD -------------------#
-key = module(x['image'])
+key = module(next_batch['image'])
 
 # Attach a trainable linear layer to adapt for the new task.
 

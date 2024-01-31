@@ -1,14 +1,15 @@
 import tensorflow as tf
 # tf.compat.v1.disable_eager_execution()
+# tf.data.experimental.enable_debug_mode()
 import pandas as pd
 import numpy as np
 import os
 import gzip
-from sklearn.model_selection import train_test_split
+# from sklearn.model_selection import train_test_split
 from PIL import Image
 
-data_folder = 'data/physionet.org/files/mimic-cxr-jpg/2.0.0/files'
-csv_folder = 'data/physionet.org/files/mimic-cxr-jpg/2.0.0'
+data_folder = './data/physionet.org/files/mimic-cxr-jpg/2.0.0/files'
+csv_folder = './data/physionet.org/files/mimic-cxr-jpg/2.0.0'
 metadata_csv_file = 'mimic-cxr-2.0.0-metadata.csv.gz'
 split_csv_file = 'mimic-cxr-2.0.0-split.csv.gz'
 chexpert_csv_file = 'mimic-cxr-2.0.0-chexpert.csv.gz'
@@ -101,8 +102,8 @@ class MIMIC_CXR_JPG_Loader:
         train_dataset = tf.data.Dataset.from_tensor_slices(train_split[req_columns])
         val_dataset = tf.data.Dataset.from_tensor_slices(val_split[req_columns])
         test_dataset = tf.data.Dataset.from_tensor_slices(test_split[req_columns])
-        train_dataset = train_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.int32, tf.string]))
-        val_dataset = val_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.int32, tf.string]))
-        test_dataset = test_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.int32, tf.string]))
+        train_dataset = train_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.float32, tf.string]))
+        val_dataset = val_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.float32, tf.string]))
+        test_dataset = test_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.float32, tf.string]))
         
         return train_dataset, val_dataset, test_dataset
