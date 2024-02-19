@@ -34,12 +34,13 @@ import pandas as pd
 import tensorflow as tf
 
 from time import time
+from datetime import datetime
 # from sklearn.preprocessing import MultiLabelBinarizer
 
 from loader.labels import LABELS
 
 
-def learning_curves(history, fig_path):
+def learning_curves(history, fig_path, start_time):
     """Plot the learning curves of loss and macro f1 score 
     for the training and validation datasets.
     
@@ -73,7 +74,7 @@ def learning_curves(history, fig_path):
     plt.title('Training and Validation Macro F1-score')
     plt.xlabel('epoch')
 
-    filename = os.path.join(fig_path, "learning_curve.png")
+    filename = os.path.join(fig_path, "learning_curve_" + start_time + ".png")
     print("Saving to", filename)
     plt.savefig(filename)
     
@@ -161,7 +162,12 @@ def print_time(t):
     s = (t%3600)%60
     return '%dh:%dm:%ds'%(h,m,s)
 
-def show_prediction(image, gt, model, fig_path):
+def get_curr_datetime():
+    now = datetime.now()
+    dt_string = now.strftime("%Y-%m-%d_%H%M")
+    return dt_string
+
+def show_prediction(image, gt, model, fig_path, start_time):
     batch_size = len(image)
     # mlb = MultiLabelBinarizer()
     # Generate prediction
@@ -197,7 +203,7 @@ def show_prediction(image, gt, model, fig_path):
         # axes[i, 2].axis('off')
         
     # style.use('default')
-    filename = os.path.join(fig_path, "sample_predict.png")
+    filename = os.path.join(fig_path, "sample_predict_" + start_time + ".png")
     print("Saving to", filename)
     plt.savefig(filename)
     

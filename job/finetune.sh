@@ -6,21 +6,22 @@
 #SBATCH --error=../out/logs/finetune%j.err
 
 # select the node edith
-#SBATCH --nodelist="edith2"
 #SBATCH --partition=edith
+#SBATCH --nodelist="jarvis4"
 
-# use one 2080Ti GPU
-#SBATCH --gpus=geforce:2
+# use GPU
+##SBATCH --gpus=geforce:4
+#SBATCH --gpus=nvidia_geforce_gtx_1080_ti:2
 
 # number of requested nodes
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 
 # memory per node
-#SBATCH --mem=65536
+#SBATCH --mem=64200
 
 # CPU allocated
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=4
 
 #SBATCH --job-name=med-ssl
 #SBATCH --time=8:00:00
@@ -30,7 +31,7 @@
 MYHOME=/ubc/cs/research/shield/projects/payamfz
 PROJPATH=$MYHOME/medical-ssl-segmentation
 
-conda activate gputest
+conda activate tf2-gpu
 # nvidia-smi
 # nvcc --version
 python -c "import tensorflow as tf; print('GPU LIST:', tf.config.list_physical_devices('GPU'))"
@@ -38,8 +39,11 @@ python -c "import tensorflow as tf; print('GPU LIST:', tf.config.list_physical_d
 
 # python $PROJPATH/finetuning2.py --dataset=MIMIC-CXR \
 #   --base_model_path=./base-models/simclr/r152_2x_sk1/hub/ \
-#   --epochs=10 --batch_size=64 --learning_rate=1.0
+#   --epochs=4 --batch_size=64 --learning_rate=0.1
 
-python $PROJPATH/finetuning2.py --dataset=MIMIC-CXR \
-  --base_model_path=./base-models/simclr/r152_2x_sk1/hub/ \
-  --epochs=1 --batch_size=2 --learning_rate=1.0
+# python $PROJPATH/finetuning2.py --dataset=MIMIC-CXR \
+#   --base_model_path=./base-models/remedis/cxr-50x1-remedis-s/ \
+#   --epochs=4 --batch_size=64 --learning_rate=0.1
+
+python $PROJPATH/finetuning_simclr.py --dataset=MIMIC-CXR \
+  --epochs=1 --batch_size=64 --learning_rate=0.1

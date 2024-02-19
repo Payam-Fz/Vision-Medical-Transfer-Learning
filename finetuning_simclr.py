@@ -48,6 +48,7 @@ from utils.augmentation import preprocess_image
 from utils.analysis import *
 
 from loader.mimic_cxr_jpg_loader import MIMIC_CXR_JPG_Loader
+from loader.labels import LABELS
 
 
 #------------------- SETUP -------------------#
@@ -168,7 +169,7 @@ def main(argv):
 
   elif DATASET == 'MIMIC-CXR':
     # customLoader = MIMIC_CXR_JPG_Loader({'train': 360000, 'validate': 2900, 'test': 0}, project_folder)
-    customLoader = MIMIC_CXR_JPG_Loader({'train': 5000, 'validate': 200, 'test': 0}, project_folder)
+    customLoader = MIMIC_CXR_JPG_Loader({'train': 2048, 'validate': 200, 'test': 200}, project_folder)
     train_tfds, val_tfds, test_tfds = customLoader.load()
     num_classes = customLoader.metadata['num_classes']
 
@@ -192,50 +193,39 @@ def main(argv):
 
   #------------------- LOAD MODLES -------------------#
   
-  # Load module and construct the computation graph
-  # Load the base network and set it to non-trainable (for speedup fine-tuning)
-  hub_path = os.path.join(project_folder, BASE_MODEL_PATH)
-  try:
-    feature_extractor_layer = hub.KerasLayer(hub_path, input_shape=(*IMAGE_SIZE, CHANNELS), trainable=False)
-  except:
-    print(f"""The model {hub_path} did not load. Please verify the model path. It is also worth considering that the model might still be in the process of being uploaded to the designated location. If you have recently uploaded it to a notebook, there could be delays associated with the upload.""")
-    raise
+  class Model(tf.keras.Model):
+    def __init__(self, path):
+      super(Model, self).__init__()
+      self.saved_model = tf.saved_model.load(path)
+      self.dense_layer = tf.keras.layers.Dense(units=num_classes, name="head_supervised_new")
+      self.optimizer = LARSOptimizer(
+        learning_rate=LEARNING_RATE,
+        momentum=MOMENTUM,
+        weight_decay=WEIGHT_DECAY,
+        exclude_from_weight_decay=['batch_normalization', 'bias', 'head_supervised'])
 
-  #------------------- SETUP TRAINING HEAD -------------------#
+    def call(self, x):
+      with tf.GradientTape() as tape:
+        outputs = self.saved_model(x['image'], trainable=False)
+        print(outputs)
+        logits_t = self.dense_layer(outputs['final_avg_pool'])
+        loss_t = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
+          labels = tf.one_hot(x['label'], num_classes), logits=logits_t))
+        dense_layer_weights = self.dense_layer.trainable_weights
+        print('Variables to train:', dense_layer_weights)
+        grads = tape.gradient(loss_t, dense_layer_weights)
+        self.optimizer.apply_gradients(zip(grads, dense_layer_weights))
+      return loss_t, x["image"], logits_t, x["label"]
   
-  model = tf.keras.Sequential([
-    feature_extractor_layer,
-    layers.Dense(1024, activation='relu', name='hidden_layer'),
-    layers.Dense(num_classes, activation='sigmoid', name='multi-label_classifier')
-  ])
+  model = Model("gs://simclr-checkpoints-tf2/simclrv2/finetuned_100pct/r50_1x_sk0/saved_model/")
+
+  # Remove this for debugging.  
+  @tf.function
+  def train_step(x):
+    return model(x)
   
-  # TEMP for debugging
-  print(model.summary())
-  # for batch in batched_val_tfds:
-  #     print('probability of an image for classes:', model.predict(batch[0])[:1])
-  #     break
-
-  # Setup optimizer and training op.
-  # optimizer = LARSOptimizer(
-  #     LEARNING_RATE,
-  #     momentum=MOMENTUM,
-  #     weight_decay=WEIGHT_DECAY,
-  #     exclude_from_weight_decay=['batch_normalization', 'bias', 'head_supervised'])
-  # variables_to_train = tf.trainable_variables()
-  # train_op = optimizer.minimize(
-  #     loss_t, global_step=tf.train.get_or_create_global_step(),
-  #     var_list=variables_to_train)
-
-  optimizer = tf.keras.optimizers.Adam(
-    learning_rate=LEARNING_RATE,
-    weight_decay=WEIGHT_DECAY)
-  optimizer.exclude_from_weight_decay(var_names=['batch_normalization', 'bias', 'head_supervised'])
-
-  model.compile(
-    optimizer=optimizer,
-    loss=macro_soft_f1,
-    metrics=[macro_f1])
-
+  # print(model.summary())
+  
   #------------------- PERFORM FINETUNING -------------------#
 
   # Define the Keras TensorBoard callback.
@@ -243,28 +233,49 @@ def main(argv):
   tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=logdir)
 
   start = time()
-  history = model.fit(batched_train_tfds,
-                      epochs=EPOCHS,
-                      validation_data=batched_val_tfds,
-                      callbacks=[tensorboard_callback])
-  print('\nTraining took {}'.format(print_time(time.time()-start)))
+  total_iterations = EPOCHS
+  iterator = iter(batched_train_tfds)
+  for it in range(total_iterations):
+    x = next(iterator)
+    loss, image, logits, labels = train_step(x)
+    logits = logits.numpy()
+    labels = labels.numpy()
+    pred = logits.argmax(-1)
+    correct = np.sum(pred == labels)
+    total = labels.size
+    print("[Iter {}] Loss: {} Top 1: {}".format(it+1, loss, correct/float(total)))
+    
+  print('\Finetuning took {}'.format(print_time(time.time()-start)))
 
 
   #------------------- RESULTS -------------------#
 
-  losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, os.path.join(project_folder, './out/figs'), START_TIME)
-  # model_bce_losses, model_bce_val_losses, model_bce_macro_f1s, model_bce_val_macro_f1s = learning_curves(history_bce)
+  #@title Plot the images and predictions
+  fig, axes = plt.subplots(5, 1, figsize=(15, 15))
+  for i in range(5):
+    axes[i].imshow(image[i])
+    true_text = LABELS[labels[i]]
+    pred_text = LABELS[pred[i]]
+    axes[i].axis('off')
+    axes[i].text(256, 128, 'Truth: ' + true_text + '\n' + 'Pred: ' + pred_text)
+  
+  filename = os.path.join(project_folder, './out/figs', "simclr_ft_" + start_time + ".png")
+  print("Saving to", filename)
+  plt.savefig(filename)
+
+  # losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, os.path.join(project_folder, './out/figs'), START_TIME)
+  # # model_bce_losses, model_bce_val_losses, model_bce_macro_f1s, model_bce_val_macro_f1s = learning_curves(history_bce)
+
+  # # for batch in batched_val_tfds:
+  # #   print('probability of an image for classes (after finetuning):', model.predict(batch[0])[:1])
+  # #   break
+
+  # print("Macro soft-F1 loss: %.2f" %val_losses[-1])
+  # print("Macro F1-score: %.2f" %val_macro_f1s[-1])
 
   # for batch in batched_val_tfds:
-  #   print('probability of an image for classes (after finetuning):', model.predict(batch[0])[:1])
+  #   show_prediction(*batch, model, os.path.join(project_folder, './out/figs'), START_TIME)
   #   break
-
-  print("Macro soft-F1 loss: %.2f" %val_losses[-1])
-  print("Macro F1-score: %.2f" %val_macro_f1s[-1])
-
-  for batch in batched_val_tfds:
-    show_prediction(*batch, model, os.path.join(project_folder, './out/figs'), START_TIME)
-    break
   
   
   #------------------- SAVE MODELS -------------------#
