@@ -37,8 +37,6 @@ from time import time
 from datetime import datetime
 # from sklearn.preprocessing import MultiLabelBinarizer
 
-from loader.labels import LABELS
-
 
 def learning_curves(history, fig_path, start_time):
     """Plot the learning curves of loss and macro f1 score 
@@ -191,7 +189,6 @@ def show_prediction(image, gt, model, fig_path, start_time):
         axes[i, 1].axis([0, 10, 0, 10])
         axes[i, 1].axis('off')
         axes[i, 1].text(1, 2, '\n'.join(LABELS[np.where(gt[i].numpy() == 1)]), fontsize=12)
-        # axes[i, 1].axis('off')
 
         # Display the predictions
         selected = np.where(prediction[i] > 0.5, '*', ' ')
@@ -200,10 +197,9 @@ def show_prediction(image, gt, model, fig_path, start_time):
         axes[i, 2].axis([0, 10, 0, 10])
         axes[i, 2].axis('off')
         axes[i, 2].text(1, 0, pred_str, fontsize=10)
-        # axes[i, 2].axis('off')
         
     # style.use('default')
-    filename = os.path.join(fig_path, "sample_predict_" + start_time + ".png")
+    filename = os.path.join(fig_path, "predict_sample_" + start_time + ".png")
     print("Saving to", filename)
     plt.savefig(filename)
     

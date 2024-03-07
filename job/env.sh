@@ -28,8 +28,6 @@
 
 #----------------------------------------------------------
 
-MYHOME=/ubc/cs/research/shield/projects/payamfz
-PROJPATH=$MYHOME/medical-ssl-segmentation
 
 conda activate tf2-gpu
 # conda activate gputest

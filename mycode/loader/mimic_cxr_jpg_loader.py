@@ -13,27 +13,34 @@ csv_folder = './data/physionet.org/files/mimic-cxr-jpg/2.0.0'
 metadata_csv_file = 'mimic-cxr-2.0.0-metadata.csv.gz'
 split_csv_file = 'mimic-cxr-2.0.0-split.csv.gz'
 chexpert_csv_file = 'mimic-cxr-2.0.0-chexpert.csv.gz'
-        
-# Turn labels into multi-hot-encoding
-# 1.0 : The label was positively mentioned in the associated study, and is present in one or more of the corresponding images
-# 0.0 : The label was negatively mentioned in the associated study, and therefore should not be present in any of the corresponding images
-# -1.0 : The label was either:
-#   (1) mentioned with uncertainty in the report, and therefore may or may not be present to some degree in the corresponding image, or
-#   (2) mentioned with ambiguous language in the report and it is unclear if the pathology exists or not
-# Missing (empty element) : No mention of the label was made in the report
-label_mapping = {'1.0': 1, '-1.0': 0, '0.0': 0, '': 0}
-
-# Order matters
-label_columns = ['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Enlarged Cardiomediastinum',
-                'Fracture', 'Lung Lesion', 'Lung Opacity', 'No Finding', 'Pleural Effusion',
-                'Pleural Other', 'Pneumonia', 'Pneumothorax', 'Support Devices']
 
 
 class MIMIC_CXR_JPG_Loader:
+
+    # ALL
+    # LABELS = np.array(['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Enlarged Cardiomediastinum',
+    #                 'Fracture', 'Lung Lesion', 'Lung Opacity', 'No Finding', 'Pleural Effusion',
+    #                 'Pleural Other', 'Pneumonia', 'Pneumothorax', 'Support Devices'])
+
+    # ONLY COMMON
+    class_names = np.array(['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema',
+                    'Pleural Effusion', 'Pneumonia', 'Pneumothorax']) #, 'No Finding'
+
+    # Turn labels into multi-hot-encoding
+    # 1.0 : The label was positively mentioned in the associated study, and is present in one or more of the corresponding images
+    # 0.0 : The label was negatively mentioned in the associated study, and therefore should not be present in any of the corresponding images
+    # -1.0 : The label was either:
+    #   (1) mentioned with uncertainty in the report, and therefore may or may not be present to some degree in the corresponding image, or
+    #   (2) mentioned with ambiguous language in the report and it is unclear if the pathology exists or not
+    # Missing (empty element) : No mention of the label was made in the report
+    label_mapping = {'1.0': '1', '-1.0': '-1', '0.0': '0', '': '0'}
+
     # split_size is of form: {'train': int, 'validate': int, 'test': int}
-    def __init__(self, split_size={}, project_dir='../'):
+    def __init__(self, split_size={}, project_dir='./'):
         self._in_split_size = split_size
         self.metadata = {}
+        self.metadata['num_classes'] = len(self.class_names)
+        self.metadata['class_names'] = self.class_names
         self.project_dir = project_dir
         
     def _load_image(self, subject_id, study_id, dicom_id):
@@ -45,14 +52,40 @@ class MIMIC_CXR_JPG_Loader:
         image = tf.image.decode_image(image, channels=3, dtype=tf.float32)
         return image
 
+    # converts a row of labels in string to integers based on the map
+    def _map_labels(self, label_row):
+        int_labels = pd.DataFrame([self.label_mapping[str_label] for str_label in label_row])
+        return int_labels
+
     def _load_label(self, subject_id, study_id):
         subject_id_str = subject_id.numpy().decode('utf-8')
         study_id_str = study_id.numpy().decode('utf-8')
-        label_df = self.label_csv[(self.label_csv['subject_id'] == subject_id_str) & (self.label_csv['study_id'] == study_id_str)].iloc[:, 2:]
+        # Label is consistent across different DICOMs of the same patient + study
+        label_df = self.label_csv[
+            (self.label_csv['subject_id'] == subject_id_str) & (self.label_csv['study_id'] == study_id_str)
+            ].iloc[:, 2:]
         assert(label_df.shape[0] == 1)
         # Multi-hot encode labels (using explicit column names to prevent errors due to reordered columns)
-        multi_hot_labels = [label_mapping[label_df.iloc[0][col]] for col in label_columns]
+        multi_hot_labels = label_df.apply(self._map_labels, axis=1)
         return multi_hot_labels
+    
+    def _filter_data(self, data_df, filters):
+        print('v10')
+        filtered = data_df
+        # filtered.sort_index(axis=1, inplace=True)
+        if 'has_label' in filters:
+            int_labels = self.label_csv[self.class_names].replace(self.label_mapping).astype(int)
+            num_positive_labels = int_labels.eq(1).sum(axis=1)
+            subject_study_pair = self.label_csv[num_positive_labels > 0].iloc[:, :2]
+            filtered = filtered[filtered[['subject_id','study_id']].apply(tuple, axis=1).isin(subject_study_pair[['subject_id', 'study_id']].apply(tuple, axis=1))]
+        if 'single_label' in filters:
+            num_positive_labels = self._map_labels(self.label_csv).eq(1).sum(axis=1)
+            subject_study_pair = self.label_csv[num_positive_labels == 1].loc[:, :2]
+            # subject_study = self.label_csv[np.sum(self.label_csv[self.class_names]) == 1].loc[:, :2]
+            filtered = [filtered[:2] == subject_study_pair]
+        if 'frontal_view' in filters:
+            filtered = [filtered['ViewPosition'] in ['PA', 'AP']]
+        return filtered
 
     def _preprocess_image_label(self, row):
         subject_id = row[0]
@@ -63,11 +96,16 @@ class MIMIC_CXR_JPG_Loader:
         info = [subject_id, study_id, dicom_id]
         return image, label, info
     
-    def load(self):
+    # filter is an array with these possible flags:
+    # 'has_label'   -> the samples selected must be classified in at least 1 of the labels from the class_names
+    # 'single_label'-> only include the samples that have at most 1 label
+    # 'frontal_view'     -> only include postero-anterior and antero-posterior images
+    def load(self, filters=None):
         # Read .csv info files
         with gzip.open(os.path.join(self.project_dir, csv_folder, chexpert_csv_file), 'rt') as file:
             label_csv = pd.read_csv(file, encoding='utf-8', dtype='string')
-            self.label_csv = label_csv.fillna('')
+            required_labels = np.concatenate((['subject_id', 'study_id'], self.class_names))
+            self.label_csv = label_csv.fillna('')[required_labels]
         with gzip.open(os.path.join(self.project_dir, csv_folder, metadata_csv_file), 'rt') as file:
             metadata_csv = pd.read_csv(file, encoding='utf-8', dtype='string')
         with gzip.open(os.path.join(self.project_dir, csv_folder, split_csv_file), 'rt') as file:
@@ -76,7 +114,12 @@ class MIMIC_CXR_JPG_Loader:
         # Merge the data
         merged_data = pd.merge(metadata_csv, split_csv, on=['dicom_id', 'study_id', 'subject_id'])
         merged_data = merged_data.fillna('')
-        self.metadata['total_size'] = merged_data.shape[0] 
+        self.metadata['total_size'] = merged_data.shape[0]
+
+        # Filter the data if needed
+        if filters is not None and len(filters) > 0:
+            merged_data = self._filter_data(merged_data, filters)
+        print('merged_data', merged_data.head())
 
         # Group data by 'split' column and get sizes
         grouped_data = merged_data.groupby('split', group_keys=False)
@@ -95,15 +138,17 @@ class MIMIC_CXR_JPG_Loader:
 
         self.metadata['split_size'] = { 'train': train_split.shape[0], 'validate': val_split.shape[0], 'test': test_split.shape[0] }
         self.metadata['split_size_frac'] = {key: value / self.metadata['total_size'] for key, value in self.metadata['split_size'].items()}
-        self.metadata['num_classes'] = len(label_columns)
         
         # Create TensorFlow datasets
         req_columns = ['subject_id', 'study_id', 'dicom_id']
         train_dataset = tf.data.Dataset.from_tensor_slices(train_split[req_columns])
         val_dataset = tf.data.Dataset.from_tensor_slices(val_split[req_columns])
         test_dataset = tf.data.Dataset.from_tensor_slices(test_split[req_columns])
-        train_dataset = train_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.float32, tf.string]))
-        val_dataset = val_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.float32, tf.string]))
-        test_dataset = test_dataset.map(lambda x: tf.py_function(self._preprocess_image_label, [x], [tf.float32, tf.float32, tf.string]))
+        train_dataset = train_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.float32, tf.string]))
+        val_dataset = val_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.float32, tf.string]))
+        test_dataset = test_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.float32, tf.string]))
         
         return train_dataset, val_dataset, test_dataset
+    
+    def info(self):
+        return self.metadata

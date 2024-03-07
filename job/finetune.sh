@@ -11,7 +11,7 @@
 
 # use GPU
 ##SBATCH --gpus=geforce:4
-#SBATCH --gpus=nvidia_geforce_gtx_1080_ti:2
+#SBATCH --gpus=nvidia_geforce_gtx_1080_ti:4
 
 # number of requested nodes
 #SBATCH --nodes=1
@@ -45,5 +45,9 @@ python -c "import tensorflow as tf; print('GPU LIST:', tf.config.list_physical_d
 #   --base_model_path=./base-models/remedis/cxr-50x1-remedis-s/ \
 #   --epochs=4 --batch_size=64 --learning_rate=0.1
 
-python $PROJPATH/finetuning_simclr.py --dataset=MIMIC-CXR \
-  --epochs=1 --batch_size=64 --learning_rate=0.1
+# python $PROJPATH/finetuning_simclr.py --dataset=MIMIC-CXR \
+#   --epochs=1 --batch_size=32 --learning_rate=0.1
+
+python $PROJPATH/finetuning3.py --dataset=MIMIC-CXR \
+    --model_name=simclr_50x2 --base_model_path='./base-models/simclr/r50_2x_sk0/hub/' \
+    --image_size=448 --epochs=10 --batch_size=32 --learning_rate=0.1

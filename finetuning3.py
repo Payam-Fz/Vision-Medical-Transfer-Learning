@@ -39,15 +39,15 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 # LARS optimizer from lars_optimizer.py in SimCLR repository
-from lars_optimizer import LARSOptimizer
+from code.utils.lars_optimizer import LARSOptimizer
 # macro_soft_f1 optimizer from multi-label-soft-f1 repository
-from objective_func import macro_soft_f1, macro_f1
+from code.utils.objective_func import macro_soft_f1, macro_f1
 # Preprocessing functions from data_util.py in SimCLR repository
-from utils.augmentation import preprocess_image
+from code.utils.augmentation import preprocess_image
 # utilities to plot, time, and score
-from utils.analysis import *
+from code.utils.analysis import *
 
-from loader.mimic_cxr_jpg_loader import MIMIC_CXR_JPG_Loader
+from code.loader.mimic_cxr_jpg_loader import MIMIC_CXR_JPG_Loader
 
 
 #------------------- SETUP -------------------#
@@ -65,28 +65,31 @@ os.makedirs(project_folder + '/out/models', exist_ok=True)
 FLAGS = flags.FLAGS
 
 _DATASET = flags.DEFINE_string(
-    'dataset', 'MIMIC-CXR', '["Chexpert", "Camelyon", "MIMIC-CXR", "Noise"]'
+  'dataset', 'MIMIC-CXR', '["Chexpert", "Camelyon", "MIMIC-CXR", "Noise"]'
 )
 _BASE_MODEL_PATH = flags.DEFINE_string(
-    'base_model_path', './base-models/simclr/r152_2x_sk1/hub/', 'e.g. "./base-models/simclr/r152_2x_sk1/hub/" or "./base-models/remedis/cxr-152x2-remedis-m/"'
+  'base_model_path', './base-models/simclr/r152_2x_sk1/hub/', 'e.g. "./base-models/simclr/r152_2x_sk1/hub/" or "./base-models/remedis/cxr-152x2-remedis-m/"'
+)
+_MODEL_NAME = flags.DEFINE_string(
+  'model_name', 'unnamed', 'e.g. "finetuned_REMEDIS"'
 )
 _EPOCHS = flags.DEFINE_integer(
-    'epochs', 10, 'Number of epochs to perform fine-tuning.'
+  'epochs', 10, 'Number of epochs to perform fine-tuning.'
 )
 _BATCH_SIZE = flags.DEFINE_integer(
-    'batch_size', 64, 'Batch size for training.'
+  'batch_size', 64, 'Batch size for training.'
 )
 _IMAGE_SIZE = flags.DEFINE_integer(
   'image_size', 448, 'Input image size.'
 )
 _LEARNING_RATE = flags.DEFINE_float(
-    'learning_rate', 0.1, 'Initial learning rate per batch size.'
+  'learning_rate', 0.1, 'Initial learning rate per batch size.'
 )
 _MOMENTUM = flags.DEFINE_float(
   'momentum', 0.9, 'Momentum parameter.'
 )
 _WEIGHT_DECAY = flags.DEFINE_float(
-    'weight_decay', 1e-6, 'Amount of weight decay to use.'
+  'weight_decay', 1e-6, 'Amount of weight decay to use.'
 )
 
 def main(argv):
@@ -95,6 +98,7 @@ def main(argv):
   
   DATASET = _DATASET.value #@param ["Chexpert", "Camelyon", "MIMIC-CXR", "Noise"]
   BASE_MODEL_PATH = _BASE_MODEL_PATH.value
+  MODEL_NAME = _MODEL_NAME.value
   BATCH_SIZE = _BATCH_SIZE.value
   LEARNING_RATE = _LEARNING_RATE.value
   EPOCHS = _EPOCHS.value
@@ -163,7 +167,6 @@ def main(argv):
 
   elif DATASET == 'Chexpert':
     # TODO: Load chexpert data here.
-    num_classes = 14
     raise Exception("not implemented. Please download the chexpert data manually and add code to read here.")
 
   elif DATASET == 'MIMIC-CXR':
@@ -194,11 +197,26 @@ def main(argv):
   
   # Load module and construct the computation graph
   # Load the base network and set it to non-trainable (for speedup fine-tuning)
-  hub_path = os.path.join(project_folder, BASE_MODEL_PATH)
+  
+  model_path = os.path.join(project_folder, BASE_MODEL_PATH)
+  
+  # model = hub.load(model_url)
+  # if 'remedis' in MODEL_NAME:
+  #   feature_extractor_layer = tf.saved_model.load(model_path, tags=['serve'])
+  # elif 'simclr' in MODEL_NAME:
+  #   feature_extractor_layer = tf.saved_model.load(model_path, tags=[]).signatures['default']
+  # else:
+  #   assert False, 'seems like model is not supported'
+  
+  # if 'remedis' in MODEL_NAME:
+  #   base_image_size = (448,448)
+  # elif 'simclr' in MODEL_NAME:
+  #   base_image_size = (32,32)
+  
   try:
-    feature_extractor_layer = hub.KerasLayer(hub_path, input_shape=(*IMAGE_SIZE, CHANNELS), trainable=False)
+    feature_extractor_layer = hub.KerasLayer(model_path, input_shape=(*IMAGE_SIZE, CHANNELS), trainable=False)
   except:
-    print(f"""The model {hub_path} did not load. Please verify the model path. It is also worth considering that the model might still be in the process of being uploaded to the designated location. If you have recently uploaded it to a notebook, there could be delays associated with the upload.""")
+    print(f"""The model {model_path} did not load. Please verify the model path. It is also worth considering that the model might still be in the process of being uploaded to the designated location. If you have recently uploaded it to a notebook, there could be delays associated with the upload.""")
     raise
 
   #------------------- SETUP TRAINING HEAD -------------------#
@@ -239,7 +257,7 @@ def main(argv):
   #------------------- PERFORM FINETUNING -------------------#
 
   # Define the Keras TensorBoard callback.
-  logdir="out/board/fit_" + START_TIME
+  logdir="out/board/finetune_" + MODEL_NAME + '_' + START_TIME
   tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=logdir)
 
   start = time()
@@ -247,12 +265,15 @@ def main(argv):
                       epochs=EPOCHS,
                       validation_data=batched_val_tfds,
                       callbacks=[tensorboard_callback])
-  print('\nTraining took {}'.format(print_time(time.time()-start)))
+  print('\nTraining took {}'.format(print_time(time()-start)))
 
 
   #------------------- RESULTS -------------------#
 
-  losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, os.path.join(project_folder, './out/figs'), START_TIME)
+  losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(
+    history,
+    os.path.join(project_folder, './out/figs'),
+    MODEL_NAME + START_TIME)
   # model_bce_losses, model_bce_val_losses, model_bce_macro_f1s, model_bce_val_macro_f1s = learning_curves(history_bce)
 
   # for batch in batched_val_tfds:
@@ -263,15 +284,17 @@ def main(argv):
   print("Macro F1-score: %.2f" %val_macro_f1s[-1])
 
   for batch in batched_val_tfds:
-    show_prediction(*batch, model, os.path.join(project_folder, './out/figs'), START_TIME)
+    show_prediction(*batch, model, os.path.join(project_folder, './out/figs'), 'finetune_' + MODEL_NAME + START_TIME)
     break
   
   
   #------------------- SAVE MODELS -------------------#
-  export_path = project_folder + "./out/models/finetuned_{}".format(START_TIME)
-  tf.keras.experimental.export_saved_model(model, export_path)
+  export_path = project_folder + "/out/models/finetune_{}_{}".format(MODEL_NAME, START_TIME)
+  tf.saved_model.save(model, export_path)
   print("Model with macro soft-f1 was exported in this path: '{}'".format(export_path))
 
+  print('\nDONE!')
+  
 if __name__ == '__main__':
   # tf.disable_eager_execution()  # Disable eager mode when running with TF2.
   app.run(main)
