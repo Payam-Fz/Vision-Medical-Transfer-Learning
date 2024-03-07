@@ -66,25 +66,27 @@ class MIMIC_CXR_JPG_Loader:
             ].iloc[:, 2:]
         assert(label_df.shape[0] == 1)
         # Multi-hot encode labels (using explicit column names to prevent errors due to reordered columns)
-        multi_hot_labels = label_df.apply(self._map_labels, axis=1)
+        ordered_labels = label_df[self.class_names]
+        multi_hot_labels = np.squeeze(ordered_labels.replace(self.label_mapping).astype(int).to_numpy())
         return multi_hot_labels
     
     def _filter_data(self, data_df, filters):
-        print('v10')
         filtered = data_df
-        # filtered.sort_index(axis=1, inplace=True)
         if 'has_label' in filters:
             int_labels = self.label_csv[self.class_names].replace(self.label_mapping).astype(int)
             num_positive_labels = int_labels.eq(1).sum(axis=1)
             subject_study_pair = self.label_csv[num_positive_labels > 0].iloc[:, :2]
-            filtered = filtered[filtered[['subject_id','study_id']].apply(tuple, axis=1).isin(subject_study_pair[['subject_id', 'study_id']].apply(tuple, axis=1))]
+            filtered = filtered[filtered[['subject_id','study_id']].apply(tuple, axis=1)
+                .isin(subject_study_pair[['subject_id', 'study_id']].apply(tuple, axis=1))]
         if 'single_label' in filters:
-            num_positive_labels = self._map_labels(self.label_csv).eq(1).sum(axis=1)
-            subject_study_pair = self.label_csv[num_positive_labels == 1].loc[:, :2]
-            # subject_study = self.label_csv[np.sum(self.label_csv[self.class_names]) == 1].loc[:, :2]
-            filtered = [filtered[:2] == subject_study_pair]
+            int_labels = self.label_csv[self.class_names].replace(self.label_mapping).astype(int)
+            num_positive_labels = int_labels.eq(1).sum(axis=1)
+            subject_study_pair = self.label_csv[num_positive_labels == 1].iloc[:, :2]
+            filtered = filtered[filtered[['subject_id','study_id']].apply(tuple, axis=1)
+                .isin(subject_study_pair[['subject_id', 'study_id']].apply(tuple, axis=1))]
         if 'frontal_view' in filters:
-            filtered = [filtered['ViewPosition'] in ['PA', 'AP']]
+            filtered = filtered[filtered['ViewPosition'].isin(['PA', 'AP'])]
+        
         return filtered
 
     def _preprocess_image_label(self, row):
@@ -119,7 +121,9 @@ class MIMIC_CXR_JPG_Loader:
         # Filter the data if needed
         if filters is not None and len(filters) > 0:
             merged_data = self._filter_data(merged_data, filters)
-        print('merged_data', merged_data.head())
+        
+        # For debugging:
+        # print('merged_data', merged_data.head())
 
         # Group data by 'split' column and get sizes
         grouped_data = merged_data.groupby('split', group_keys=False)
@@ -144,9 +148,9 @@ class MIMIC_CXR_JPG_Loader:
         train_dataset = tf.data.Dataset.from_tensor_slices(train_split[req_columns])
         val_dataset = tf.data.Dataset.from_tensor_slices(val_split[req_columns])
         test_dataset = tf.data.Dataset.from_tensor_slices(test_split[req_columns])
-        train_dataset = train_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.float32, tf.string]))
-        val_dataset = val_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.float32, tf.string]))
-        test_dataset = test_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.float32, tf.string]))
+        train_dataset = train_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.int16, tf.string]))
+        val_dataset = val_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.int16, tf.string]))
+        test_dataset = test_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.int16, tf.string]))
         
         return train_dataset, val_dataset, test_dataset
     
