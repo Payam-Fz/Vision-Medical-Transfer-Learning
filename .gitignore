@@ -1,6 +1,7 @@
 # SPECIFIC TO THIS REPO
 /data
 /base-models
+/out
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
