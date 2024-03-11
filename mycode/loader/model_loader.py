@@ -1,11 +1,12 @@
 import os
+import tensorflow as tf
 import tensorflow_hub as hub
 from set_path import get_proj_path
 
 
 # @param name: [simclr, remedis]
-# @param type: [hub, kereas]
-def load_model(name, path, loader="hub", show_summary=False):
+# @param type: [hub, keras]
+def load_model(name, path, loader="hub", input_shape=None, show_summary=False):
     
     #_____________LOAD MODEL______________
     model_path = os.path.join(get_proj_path(), path)
@@ -13,8 +14,16 @@ def load_model(name, path, loader="hub", show_summary=False):
     try:
         if loader == "hub":
             model = hub.load(model_path)
+        elif loader == "keras":
+            model = hub.KerasLayer(
+                model_path,
+                name = name,
+                trainable = False,
+                input_shape = [] if None in input_shape else input_shape
+                )
+        
     except:
-        print(f"The model '{name}' did not load. Please verify the model path. It is also worth considering that the model might still be in the process of being uploaded to the designated location. If you have recently uploaded it to a notebook, there could be delays associated with the upload.")
+        print(f"The model '{name}' did not load successfully. Check compatibility.")
         raise
     
     # if 'remedis' in name:
@@ -39,6 +48,15 @@ def load_model(name, path, loader="hub", show_summary=False):
             # print("regularization_losses:", model.regularization_losses)
             
         elif loader == "keras":
-            model.summary()
+            print("model:", model)
+            print("name:", model.name)
+            print("dir:", dir(model)) # outputs all available functions/props to call
+            print("Layer Configuration:", model.get_config())
+            print("Specs:", model.input_spec)
+            # print("Layers:", model.layers)
+            # print("Input Shape:", model.input_shape)
+            # print("Output Shape:", model.output_shape)
+            # layer = tf.keras.Sequential([model])
+            # layer.summary()
     
     return model

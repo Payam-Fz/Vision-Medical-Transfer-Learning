@@ -12,15 +12,19 @@ from utils.augmentation import preprocess_image
 
 def show_tSNE(model, batch_size=32, num_batches=5, signature_name=None):
     # ------------- Variables ------------
-
+    input_tensor_shape = (448,448)  # default
     
     # ------------- Process model -----------
-    # input_signature_name = signature_name if signature_name is not None else list(model.signatures.keys())[0]
-    # input_signature = model.signatures[input_signature_name]
-    # input_tensor_shape = input_signature.inputs[0].shape
-    input_tensor_shape = (128,128)
-    inp_width, inp_height = input_tensor_shape[1], input_tensor_shape[2]
+    if hasattr(model, 'signatures'):
+        input_signature_name = signature_name if signature_name is not None else list(model.signatures.keys())[0]
+        input_signature = model.signatures[input_signature_name]
+        provided_shape = input_signature.inputs[0].shape[1:3]    # Shape is like (None, 448, 448, 3)
+        if None not in provided_shape:
+            input_tensor_shape = provided_shape
 
+    inp_height, inp_width = input_tensor_shape[0], input_tensor_shape[1]
+    print(f'input size (width, height): ({inp_width}, {inp_height})')
+    
     # ------------- load MIMIC-CXR dataset -------------
     def _preprocess_val(x, y, info=None):
         x = preprocess_image(
@@ -29,17 +33,17 @@ def show_tSNE(model, batch_size=32, num_batches=5, signature_name=None):
         return x, y
     
     data_loader = MIMIC_CXR_JPG_Loader({'train': batch_size*num_batches*5, 'validate': 0, 'test': 0}, get_proj_path())
-    train_tfds, _, _ = data_loader.load()
+    train_tfds, _, _ = data_loader.load(['has_label', 'frontal_view'])
     class_names = data_loader.metadata['class_names']
 
     train_tfds = train_tfds.shuffle(buffer_size=batch_size*2)
     batched_train_tfds = train_tfds.map(_preprocess_val).batch(batch_size)
     samples = list(batched_train_tfds.take(num_batches))
-    test_input = np.concatenate([x for x, y in samples])
-    test_labels = np.concatenate([y for x, y in samples])
+    test_input = tf.concat([x for x, y in samples], axis=0)
+    test_labels = np.concatenate([y for x, y in samples], axis=0)
     
     print('input shape:', test_input.shape)
-    print('output shape:', test_labels.shape)
+    print('labels shape:', test_labels.shape)
     print('class_names:',class_names)
     
     plt.imshow(test_input[0], cmap='gray')
@@ -50,13 +54,18 @@ def show_tSNE(model, batch_size=32, num_batches=5, signature_name=None):
 
     # ------------- inference -------------
 
-    features = model(test_input).numpy()
-    reshaped_features = np.reshape(features, (features.shape[0], -1))
-    print("features shape:",features.shape)
-    print("reshaped_features shape:",reshaped_features.shape)
+    infer = model(test_input)
+    if isinstance(infer, dict):
+        print('Output signatures:', infer.keys())
+        input_signature_name = signature_name if signature_name is not None else list(infer.keys())[0]
+        features = infer[input_signature_name]
+    else:
+        features = infer.numpy()
+    
+    print("Features shape:",features.shape)
     
     # pred_labels = np.argmax(model(test_input), axis=-1)
-    tsne = TSNE(n_components=2).fit_transform(reshaped_features)
+    tsne = TSNE(n_components=2).fit_transform(features)
 
     def scale_to_01_range(x):
         value_range = (np.max(x) - np.min(x))
