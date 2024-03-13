@@ -79,7 +79,7 @@ def micro_bce(y, y_hat):
     # Convert the target array to float32
     y = tf.cast(y, tf.float32)
     # Implement cross entropy loss for each observation and label
-    cross_entropy = - y * tf.math.log(tf.maximum(y_hat, 1e-16)) - (1-y) * tf.math.log(tf.maximum(1-y_hat, 1e-16))
+    cross_entropy = -y * tf.math.log(tf.maximum(y_hat, 1e-16)) - (1-y) * tf.math.log(tf.maximum(1-y_hat, 1e-16))
     # Average binary cross entropy across all batch observations and labels
     cost = tf.reduce_mean(cross_entropy)
     return cost
@@ -98,7 +98,7 @@ def macro_bce(y, y_hat):
     # Convert the target array to float32
     y = tf.cast(y, tf.float32)
     # Implement cross entropy loss for each observation and label
-    cross_entropy = - y * tf.math.log(tf.maximum(y_hat, 1e-16)) - (1-y) * tf.math.log(tf.maximum(1-y_hat, 1e-16))
+    cross_entropy = -y * tf.math.log(tf.maximum(y_hat, 1e-16)) - (1-y) * tf.math.log(tf.maximum(1-y_hat, 1e-16))
     # Average all binary cross entropy losses over the whole batch for each label
     cost = tf.reduce_mean(cross_entropy, axis=0)
     # Average all binary cross entropy losses over labels within the batch

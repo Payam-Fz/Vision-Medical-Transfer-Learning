@@ -2,6 +2,7 @@
 /data
 /base-models
 /out
+/out_archive
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

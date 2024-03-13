@@ -20,11 +20,11 @@ from absl import app
 from absl import flags
 from datetime import datetime
 
-from . import data as data_lib
-from . import model as model_lib
-from . import model_util
-from . import resnet
-from . import data_util
+from code.pretrain import data as data_lib
+from code.pretrain import model as model_lib
+from code.pretrain import model_util
+from code.pretrain import resnet
+from code.pretrain import data_util
 
 import tensorflow.compat.v1 as tf
 import tensorflow_datasets as tfds
@@ -32,7 +32,7 @@ import tensorflow_datasets as tfds
 import tensorflow.compat.v1.estimator as tf_estimator
 import tensorflow_hub as hub
 
-from ..loader.mimic_cxr_jpg_loader import MIMIC_CXR_JPG_Loader
+from code.loader.mimic_cxr_jpg_loader import MIMIC_CXR_JPG_Loader
 
 FLAGS = flags.FLAGS
 
@@ -76,7 +76,7 @@ _EVAL_BATCH_SIZE = flags.DEFINE_integer(
 
 _TRAIN_SUMMARY_STEPS = flags.DEFINE_integer(
   'train_summary_steps',
-  100,
+  10,
   'Steps before saving training summaries. If 0, will not save.',
 )
 
@@ -313,9 +313,24 @@ _MULTI_INSTANCE = flags.DEFINE_boolean(
   'If True, MICLe is activated for the positive pair selection.',
 )
 
+# TEMP
+tf.enable_eager_execution(
+    config=None, device_policy=None, execution_mode=None
+)
 
 #------------------- SETUP -------------------#
 
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+  try:
+    # Currently, memory growth needs to be the same across GPUs
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+    logical_gpus = tf.config.list_logical_devices('GPU')
+    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+  except RuntimeError as e:
+    # Memory growth must be set before GPUs have been initialized
+    print(e)
 
 project_folder = os.getcwd()
 if project_folder.endswith('/job'):
@@ -509,7 +524,7 @@ def main(argv):
     tf.config.set_soft_device_placement(True)
 
   # Use custom TFDS builder
-  split = {'train': 2048, 'validate': 512, 'test': 128}
+  split = {'train': 12288, 'validate': 1024, 'test': 2048}
   builder = MIMIC_CXR_JPG_Loader(split, project_folder)
   num_train_examples = split['train']
   num_eval_examples = split['validate']
@@ -521,6 +536,9 @@ def main(argv):
   
   
   MODEL_EXPORT_DIR = os.path.join(project_folder, _MODEL_DIR.value, _MODEL_NAME.value + '_' + START_TIME)
+  CHECKPOINT_DIR = os.path.join(project_folder, _CHECKPOINT.value)
+  # set tensorboard logging
+  logdir=os.path.join(project_folder, "out/board", "pretrain_" + _MODEL_NAME.value + "_" + START_TIME)
 
   if _VERBOSE.value:
     #------------------- PRINT CONFIGURATION -------------------#
@@ -536,8 +554,6 @@ def main(argv):
     tf.logging.info('Total number of training steps: %d', train_steps)
     tf.logging.info('Total number of steps in an epoch: %d', epoch_steps)
     
-  # set tensorboard logging
-  logdir=os.path.join(project_folder, "out/board", "pretrain_" + _MODEL_NAME.value + "_" + START_TIME)
         
 
   options = data_util.DistortionOptions()
@@ -599,7 +615,7 @@ def main(argv):
     cluster=cluster,
   )
   estimator = tf_estimator.tpu.TPUEstimator(
-    model_lib.build_model_fn(model, num_classes, num_train_examples, logdir=logdir),
+    model_lib.build_model_fn(model, num_classes, num_train_examples, logdir=logdir, checkpoint_dir=CHECKPOINT_DIR),
     config=run_config,
     train_batch_size=_TRAIN_BATCH_SIZE.value,
     eval_batch_size=_EVAL_BATCH_SIZE.value,
@@ -607,7 +623,7 @@ def main(argv):
   )
 
   if _MODE.value == 'eval':
-    print('EVALLLLLLLLLLLLLL')
+    tf.logging.info('_____evaluation')
     for ckpt in tf.train.checkpoints_iterator(
         run_config.model_dir, min_interval_secs=15):
       try:
@@ -632,6 +648,7 @@ def main(argv):
       if result['global_step'] >= train_steps:
         return
   else:  # Pretrain mode
+    tf.logging.info('_____training')
     train_input_fn = data_lib.build_input_fn_for_mimic(
         builder,
         is_training=True,
@@ -652,6 +669,8 @@ def main(argv):
     
     estimator.train(train_input_fn, max_steps=train_steps)
     if _MODE.value == 'train_then_eval':
+      
+      tf.logging.info('_____evaluation')
       perform_evaluation(
         estimator=estimator,
         input_fn=data_lib.build_input_fn_for_mimic(
@@ -666,8 +685,9 @@ def main(argv):
         model=model,
         num_classes=num_classes,
       )
-    
-    print('TRAINNNNNNNNNNN')
+  
+  tf.logging.info('\nDONE!')
+  print('\nDONE!')
 
 
 if __name__ == '__main__':

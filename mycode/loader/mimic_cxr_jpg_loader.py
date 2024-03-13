@@ -14,17 +14,18 @@ metadata_csv_file = 'mimic-cxr-2.0.0-metadata.csv.gz'
 split_csv_file = 'mimic-cxr-2.0.0-split.csv.gz'
 chexpert_csv_file = 'mimic-cxr-2.0.0-chexpert.csv.gz'
 
+# ALL
+# LABELS = np.array(['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Enlarged Cardiomediastinum',
+#                 'Fracture', 'Lung Lesion', 'Lung Opacity', 'No Finding', 'Pleural Effusion',
+#                 'Pleural Other', 'Pneumonia', 'Pneumothorax', 'Support Devices'])
+
+# ONLY COMMON
+CLASS_NAMES = np.array(['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema',
+                'Pleural Effusion', 'Pneumonia', 'Pneumothorax']) #, 'No Finding'
 
 class MIMIC_CXR_JPG_Loader:
 
-    # ALL
-    # LABELS = np.array(['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Enlarged Cardiomediastinum',
-    #                 'Fracture', 'Lung Lesion', 'Lung Opacity', 'No Finding', 'Pleural Effusion',
-    #                 'Pleural Other', 'Pneumonia', 'Pneumothorax', 'Support Devices'])
 
-    # ONLY COMMON
-    class_names = np.array(['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema',
-                    'Pleural Effusion', 'Pneumonia', 'Pneumothorax']) #, 'No Finding'
 
     # Turn labels into multi-hot-encoding
     # 1.0 : The label was positively mentioned in the associated study, and is present in one or more of the corresponding images
@@ -39,8 +40,8 @@ class MIMIC_CXR_JPG_Loader:
     def __init__(self, split_size={}, project_dir='./'):
         self._in_split_size = split_size
         self.metadata = {}
-        self.metadata['num_classes'] = len(self.class_names)
-        self.metadata['class_names'] = self.class_names
+        self.metadata['num_classes'] = len(CLASS_NAMES)
+        self.metadata['class_names'] = CLASS_NAMES
         self.project_dir = project_dir
         
     def _load_image(self, subject_id, study_id, dicom_id):
@@ -66,26 +67,33 @@ class MIMIC_CXR_JPG_Loader:
             ].iloc[:, 2:]
         assert(label_df.shape[0] == 1)
         # Multi-hot encode labels (using explicit column names to prevent errors due to reordered columns)
-        ordered_labels = label_df[self.class_names]
-        multi_hot_labels = np.squeeze(ordered_labels.replace(self.label_mapping).astype(int).to_numpy())
+        ordered_labels = label_df[CLASS_NAMES]
+        multi_hot_labels = tf.squeeze(ordered_labels.replace(self.label_mapping).astype(int))
+        multi_hot_labels = tf.cast(multi_hot_labels, dtype=tf.int16)
         return multi_hot_labels
     
     def _filter_data(self, data_df, filters):
         filtered = data_df
+        if 'frontal_view' in filters:
+            filtered = filtered[filtered['ViewPosition'].isin(['PA', 'AP'])]
         if 'has_label' in filters:
-            int_labels = self.label_csv[self.class_names].replace(self.label_mapping).astype(int)
+            int_labels = self.label_csv[CLASS_NAMES].replace(self.label_mapping).astype(int)
             num_positive_labels = int_labels.eq(1).sum(axis=1)
             subject_study_pair = self.label_csv[num_positive_labels > 0].iloc[:, :2]
             filtered = filtered[filtered[['subject_id','study_id']].apply(tuple, axis=1)
                 .isin(subject_study_pair[['subject_id', 'study_id']].apply(tuple, axis=1))]
         if 'single_label' in filters:
-            int_labels = self.label_csv[self.class_names].replace(self.label_mapping).astype(int)
+            int_labels = self.label_csv[CLASS_NAMES].replace(self.label_mapping).astype(int)
             num_positive_labels = int_labels.eq(1).sum(axis=1)
             subject_study_pair = self.label_csv[num_positive_labels == 1].iloc[:, :2]
             filtered = filtered[filtered[['subject_id','study_id']].apply(tuple, axis=1)
                 .isin(subject_study_pair[['subject_id', 'study_id']].apply(tuple, axis=1))]
-        if 'frontal_view' in filters:
-            filtered = filtered[filtered['ViewPosition'].isin(['PA', 'AP'])]
+        if 'unambiguous_label' in filters:
+            int_labels = self.label_csv[CLASS_NAMES].replace(self.label_mapping).astype(int)
+            num_uncertain_labels = int_labels.eq(-1).sum(axis=1)
+            subject_study_pair = self.label_csv[num_uncertain_labels == 0].iloc[:, :2]
+            filtered = filtered[filtered[['subject_id','study_id']].apply(tuple, axis=1)
+                .isin(subject_study_pair[['subject_id', 'study_id']].apply(tuple, axis=1))]
         
         return filtered
 
@@ -97,16 +105,20 @@ class MIMIC_CXR_JPG_Loader:
         label = self._load_label(subject_id, study_id)
         info = [subject_id, study_id, dicom_id]
         return image, label, info
+
+    def _preprocess_wrapper(self, row):
+        return tf.py_function(self._preprocess_image_label, inp=[row], Tout=[tf.float32, tf.int16, tf.string])
     
     # filter is an array with these possible flags:
     # 'has_label'   -> the samples selected must be classified in at least 1 of the labels from the class_names
     # 'single_label'-> only include the samples that have at most 1 label
     # 'frontal_view'     -> only include postero-anterior and antero-posterior images
+    # 'unambiguous_label' -> exclude images with label -1
     def load(self, filters=None):
         # Read .csv info files
         with gzip.open(os.path.join(self.project_dir, csv_folder, chexpert_csv_file), 'rt') as file:
             label_csv = pd.read_csv(file, encoding='utf-8', dtype='string')
-            required_labels = np.concatenate((['subject_id', 'study_id'], self.class_names))
+            required_labels = np.concatenate((['subject_id', 'study_id'], CLASS_NAMES))
             self.label_csv = label_csv.fillna('')[required_labels]
         with gzip.open(os.path.join(self.project_dir, csv_folder, metadata_csv_file), 'rt') as file:
             metadata_csv = pd.read_csv(file, encoding='utf-8', dtype='string')
@@ -148,10 +160,18 @@ class MIMIC_CXR_JPG_Loader:
         train_dataset = tf.data.Dataset.from_tensor_slices(train_split[req_columns])
         val_dataset = tf.data.Dataset.from_tensor_slices(val_split[req_columns])
         test_dataset = tf.data.Dataset.from_tensor_slices(test_split[req_columns])
-        train_dataset = train_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.int16, tf.string]))
-        val_dataset = val_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.int16, tf.string]))
-        test_dataset = test_dataset.map(lambda row: tf.py_function(self._preprocess_image_label, [row], [tf.float32, tf.int16, tf.string]))
+        train_dataset = train_dataset.map(self._preprocess_wrapper)
+        val_dataset = val_dataset.map(self._preprocess_wrapper)
+        test_dataset = test_dataset.map(self._preprocess_wrapper)
         
+        # train_dataset = train_dataset.map(lambda x, y, info: (tf.ensure_shape(y, [self.metadata['num_classes']])))
+        # val_dataset = val_dataset.map(lambda x, y, info: (
+        #     tf.ensure_shape(x, [*self.input_shape]),
+        #     tf.ensure_shape(y, [self.metadata['num_classes']])
+        #     ))
+        # test_dataset = test_dataset.map(lambda x, y, info: (tf.ensure_shape(y, [self.metadata['num_classes']])))
+        # print('___ before ensuring:', train_dataset.element_spec)
+
         return train_dataset, val_dataset, test_dataset
     
     def info(self):

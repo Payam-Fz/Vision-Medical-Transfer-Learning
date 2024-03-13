@@ -37,8 +37,11 @@ from time import time
 from datetime import datetime
 # from sklearn.preprocessing import MultiLabelBinarizer
 
+from loader.mimic_cxr_jpg_loader import CLASS_NAMES
+from utils.log import print_log
 
-def learning_curves(history, fig_path, start_time):
+
+def learning_curves(history, fig_path):
     """Plot the learning curves of loss and macro f1 score 
     for the training and validation datasets.
     
@@ -72,8 +75,8 @@ def learning_curves(history, fig_path, start_time):
     plt.title('Training and Validation Macro F1-score')
     plt.xlabel('epoch')
 
-    filename = os.path.join(fig_path, "learning_curve_" + start_time + ".png")
-    print("Saving to", filename)
+    filename = os.path.join(fig_path, "learning_curve.png")
+    print_log("Saving to", filename)
     plt.savefig(filename)
     
     return loss, val_loss, macro_f1, val_macro_f1
@@ -148,24 +151,7 @@ def perf_grid(ds, target, label_names, model, n_thresh=100):
     return grid
 
 
-def print_time(t):
-    """Function that converts time period in seconds into %h:%m:%s expression.
-    Args:
-        t (int): time period in seconds
-    Returns:
-        s (string): time period formatted
-    """
-    h = t//3600
-    m = (t%3600)//60
-    s = (t%3600)%60
-    return '%dh:%dm:%ds'%(h,m,s)
-
-def get_curr_datetime():
-    now = datetime.now()
-    dt_string = now.strftime("%Y-%m-%d_%H%M")
-    return dt_string
-
-def show_prediction(image, gt, model, fig_path, start_time):
+def show_prediction(image, gt, model, fig_path):
     batch_size = len(image)
     # mlb = MultiLabelBinarizer()
     # Generate prediction
@@ -188,19 +174,19 @@ def show_prediction(image, gt, model, fig_path, start_time):
         # Display the ground truth
         axes[i, 1].axis([0, 10, 0, 10])
         axes[i, 1].axis('off')
-        axes[i, 1].text(1, 2, '\n'.join(LABELS[np.where(gt[i].numpy() == 1)]), fontsize=12)
+        axes[i, 1].text(1, 2, '\n'.join(CLASS_NAMES[np.where(gt[i].numpy() == 1)]), fontsize=12)
 
         # Display the predictions
         selected = np.where(prediction[i] > 0.5, '*', ' ')
-        combined_array = list(zip(LABELS, prediction[i], selected))
+        combined_array = list(zip(CLASS_NAMES, prediction[i], selected))
         pred_str = '\n'.join([f"{row[2]} {row[0]}, {row[1]}" for row in combined_array])
         axes[i, 2].axis([0, 10, 0, 10])
         axes[i, 2].axis('off')
         axes[i, 2].text(1, 0, pred_str, fontsize=10)
         
     # style.use('default')
-    filename = os.path.join(fig_path, "predict_sample_" + start_time + ".png")
-    print("Saving to", filename)
+    filename = os.path.join(fig_path, "predict_sample.png")
+    print_log("Saving to", filename)
     plt.savefig(filename)
     
     

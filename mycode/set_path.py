@@ -27,10 +27,10 @@ def set_path(target_path=None):
     root = os.getcwd()
     assert root.endswith('medical-ssl-segmentation'), "Wrong path is set, check the set_path() function"
     os.makedirs(root + '/out', exist_ok=True)
-    os.makedirs(root + '/out/board', exist_ok=True)
-    os.makedirs(root + '/out/figs', exist_ok=True)
-    os.makedirs(root + '/out/logs', exist_ok=True)
-    os.makedirs(root + '/out/models', exist_ok=True)
+    os.makedirs(root + '/out/job_logs', exist_ok=True)
+    # os.makedirs(root + '/out/board', exist_ok=True)
+    # os.makedirs(root + '/out/figs', exist_ok=True)
+    # os.makedirs(root + '/out/models', exist_ok=True)
 
 def get_proj_path():
     root = os.getcwd()
