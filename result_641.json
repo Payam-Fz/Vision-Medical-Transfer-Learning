@@ -1,1 +1,0 @@
-{"contrast_loss": 10.170790672302246, "contrastive_top_1_accuracy": 1.0, "contrastive_top_5_accuracy": 1.0, "label_top_1_accuracy": 1.0, "label_top_5_accuracy": 1.0, "loss": 10.170790672302246, "regularization_loss": 0.0, "global_step": 641.0}
