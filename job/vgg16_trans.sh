@@ -7,7 +7,7 @@
 
 # select the node edith
 #SBATCH --partition=edith
-#SBATCH --nodelist="jarvis3"
+#SBATCH --nodelist="jarvis2"
 
 # use GPU
 ##SBATCH --gpus=geforce:4
@@ -36,4 +36,6 @@ python -c "import tensorflow as tf; print('GPU LIST:', tf.config.list_physical_d
 
 python $PROJPATH/mycode/neural_nets/vgg16_trans.py \
     --ouput_name=vgg16-transfer \
-    --image_size=448 --epochs=10 --batch_size=32
+    --image_size=448 --epochs=8 --batch_size=32 \
+    --load_checkpoint=./out/vgg16-transfer_2024-03-13_1815_SAVED/model/checkpoints \
+    --mode=eval

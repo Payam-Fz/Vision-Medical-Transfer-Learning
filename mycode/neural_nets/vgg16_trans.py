@@ -67,13 +67,22 @@ _MOMENTUM = flags.DEFINE_float(
 _WEIGHT_DECAY = flags.DEFINE_float(
     'weight_decay', 1e-6, 'Amount of weight decay to use.'
 )
+_LOAD_CHECKPOINT = flags.DEFINE_string(
+    'load_checkpoint', None, 'Address of checkpoint to be used. None if no checkpoint'
+)
+_MODE = flags.DEFINE_string(
+    'mode', 'train_then_eval', '["train_then_eval", "eval" ]'
+)
 
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
         # Currently, memory growth needs to be the same across GPUs
         for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
+            # tf.config.experimental.set_memory_growth(gpu, True)
+            tf.config.set_logical_device_configuration(
+                gpu,
+                [tf.config.LogicalDeviceConfiguration(memory_limit=10240)])
         logical_gpus = tf.config.list_logical_devices('GPU')
         print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
     except RuntimeError as e:
@@ -149,6 +158,8 @@ def main(argv):
     EPOCHS = _EPOCHS.value
     WEIGHT_DECAY = _WEIGHT_DECAY.value
     IMAGE_SIZE = (_IMAGE_SIZE.value, _IMAGE_SIZE.value)
+    LOAD_CHECKPOINT = _LOAD_CHECKPOINT.value
+    MODE = _MODE.value
     CHANNELS = 3
 
     PROJ_PATH = get_proj_path()
@@ -265,6 +276,11 @@ def main(argv):
     #------------------- CREATE MODEL -------------------#
     
     model = create_vgg16(IMAGE_SIZE, num_classes, summary_writer)
+    if LOAD_CHECKPOINT:
+        load_checkpoint_dir = os.path.join(PROJ_PATH,LOAD_CHECKPOINT)
+        latest = tf.train.latest_checkpoint(load_checkpoint_dir)
+        model.load_weights(latest)
+    
     print(model.summary())
 
 

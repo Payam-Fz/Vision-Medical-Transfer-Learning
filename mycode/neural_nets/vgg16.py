@@ -67,13 +67,26 @@ _MOMENTUM = flags.DEFINE_float(
 _WEIGHT_DECAY = flags.DEFINE_float(
     'weight_decay', 1e-6, 'Amount of weight decay to use.'
 )
+_LOAD_CHECKPOINT = flags.DEFINE_string(
+    'load_checkpoint', None, 'Address of checkpoint to be used. None if no checkpoint'
+)
+_MODE = flags.DEFINE_string(
+    'mode', 'train_then_eval', '["train_then_eval", "eval" ]'
+)
+
+_TRANSFER_LEARNING = flags.DEFINE_boolean(
+    'transfer_learning', True, 'Whether freeze the original model weights.'
+)
 
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
         # Currently, memory growth needs to be the same across GPUs
         for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
+            # tf.config.experimental.set_memory_growth(gpu, True)
+            tf.config.set_logical_device_configuration(
+                gpu,
+                [tf.config.LogicalDeviceConfiguration(memory_limit=10240)])
         logical_gpus = tf.config.list_logical_devices('GPU')
         print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
     except RuntimeError as e:
@@ -113,11 +126,12 @@ class BaseModel(keras.models.Sequential):
         
         return self.compute_metrics(x, y, y_pred, None)
 
-def create_vgg16(image_size, num_classes, writer):
+def create_vgg16(image_size, num_classes, writer, is_transfer_learning):
     input_shape = (*image_size, 3)
 
     base_vgg = VGG16(weights='imagenet', include_top=False, input_shape=input_shape)
-    # base_vgg.trainable = False
+    if is_transfer_learning:
+        base_vgg.trainable = False
 
     model = BaseModel(writer)
     model.add(layers.Input(shape=input_shape, name='my_input'))
@@ -149,11 +163,15 @@ def main(argv):
     EPOCHS = _EPOCHS.value
     WEIGHT_DECAY = _WEIGHT_DECAY.value
     IMAGE_SIZE = (_IMAGE_SIZE.value, _IMAGE_SIZE.value)
+    LOAD_CHECKPOINT = _LOAD_CHECKPOINT.value
+    MODE = _MODE.value
     CHANNELS = 3
 
     PROJ_PATH = get_proj_path()
     START_TIME = get_curr_datetime()
     OUTPUT_NAME = _OUTPUT_NAME.value + '_' + START_TIME
+    
+    TRANSFER_LEARNING = _TRANSFER_LEARNING.value
     
     board_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'board')
     figs_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'figs')
@@ -234,12 +252,6 @@ def main(argv):
     val_tfds = val_tfds.shuffle(buffer_size=2*BATCH_SIZE)
     batched_val_tfds = val_tfds.map(_preprocess_val).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
 
-    # TODO: in case improves performance
-    # AUTOTUNE = tf.data.experimental.AUTOTUNE
-    # batched_train_tfds = batched_train_tfds.prefetch(buffer_size=AUTOTUNE)
-
-    # next_batch = tf.data.make_one_shot_iterator(batched_train_tfds).get_next()
-
     for f, l in batched_train_tfds.take(1):
         print_log("Shape of image batch:", f.shape.as_list())
         print_log("Shape of labels batch:", l.shape.as_list())
@@ -264,37 +276,42 @@ def main(argv):
     
     #------------------- CREATE MODEL -------------------#
     
-    model = create_vgg16(IMAGE_SIZE, num_classes, summary_writer)
+    model = create_vgg16(IMAGE_SIZE, num_classes, summary_writer, is_transfer_learning=TRANSFER_LEARNING)
+    if LOAD_CHECKPOINT:
+        load_checkpoint_dir = os.path.join(PROJ_PATH,LOAD_CHECKPOINT)
+        latest = tf.train.latest_checkpoint(load_checkpoint_dir)
+        model.load_weights(latest)
+    
     print(model.summary())
 
 
     #------------------- PERFORM TRAINING -------------------#
 
-    start = time()
-    history = model.fit(
-        batched_train_tfds,
-        batch_size=BATCH_SIZE,
-        epochs=EPOCHS,
-        validation_data=batched_val_tfds,
-        callbacks=[tensorboard_callback, earlystopping_callback, checkpointer_callback])
-    
-    print_log('history:')
-    for key, value in history.history.items():
-            print_log(f'{key}: {value}')
+    if MODE != 'eval':
+        start = time()
+        history = model.fit(
+            batched_train_tfds,
+            batch_size=BATCH_SIZE,
+            epochs=EPOCHS,
+            validation_data=batched_val_tfds,
+            callbacks=[tensorboard_callback, earlystopping_callback, checkpointer_callback])
+        
+        print('\nTraining took {}'.format(print_time(time()-start)))
+        
+        print_log('history:')
+        for key, value in history.history.items():
+                print_log(f'{key}: {value}')
+        
+        losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, figs_dir)
+        print_log("Macro soft-F1 loss: %.2f" %val_losses[-1])
+        print_log("Macro F1-score: %.2f" %val_macro_f1s[-1])
+        
+        with summary_writer.as_default():
+            tf.summary.trace_export(name="model_trace", step=0, profiler_outdir=board_dir)
 
 
     #------------------- RESULTS -------------------#
     
-    print('\nTraining took {}'.format(print_time(time()-start)))
-    
-    with summary_writer.as_default():
-        tf.summary.trace_export(name="model_trace", step=0, profiler_outdir=board_dir)
-
-    losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, figs_dir)
-
-    print_log("Macro soft-F1 loss: %.2f" %val_losses[-1])
-    print_log("Macro F1-score: %.2f" %val_macro_f1s[-1])
-
     for batch in batched_val_tfds:
         show_prediction(*batch, model, figs_dir)
         break
