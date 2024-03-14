@@ -11,20 +11,20 @@
 
 # use GPU
 ##SBATCH --gpus=geforce:4
-#SBATCH --gpus=nvidia_geforce_gtx_1080_ti:4
+#SBATCH --gpus=nvidia_geforce_gtx_1080_ti:1
 
 # number of requested nodes
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 
 # memory per node
-#SBATCH --mem=64200
+#SBATCH --mem=28000
 
 # CPU allocated
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 
 #SBATCH --job-name=med-ssl
-#SBATCH --time=8:00:00
+#SBATCH --time=1-00:10:00
 
 #----------------------------------------------------------
 

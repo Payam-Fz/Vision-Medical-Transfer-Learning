@@ -23,21 +23,14 @@ print(os.getcwd())
 #------------------- IMPORTS -------------------#
 
 import numpy as np
-import pandas as pd
 from time import time
 from absl import app
 from absl import flags
-import matplotlib
-import matplotlib.pyplot as plt
 
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix, accuracy_score, classification_report
 import tensorflow as tf
 from tensorflow import keras
-from keras import backend as K
 from tensorflow.keras import layers
 from tensorflow.keras.applications import ResNet50, VGG16
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import tensorboard
 
 from utils.augmentation import preprocess_image
@@ -92,6 +85,8 @@ class BaseModel(keras.models.Sequential):
     def __init__(self, writer):
         super().__init__()
         self.writer = writer
+        self.macro_bce_loss = tf.Variable(float('inf'), trainable=False)
+        self.bce_loss = tf.Variable(float('inf'), trainable=False)
 
     # override train_step to log other metrics
     def train_step(self, data):
@@ -101,14 +96,19 @@ class BaseModel(keras.models.Sequential):
             y_pred = self(x, training=True)
             loss = self.compiled_loss(y, y_pred)
             # macro_soft_loss = macro_soft_f1(y, y_pred)
-            # bce = keras.losses.BinaryCrossentropy(from_logits=False)    # False due to 'sigmoid' activation layer
-            bce_loss = macro_bce(y, y_pred)
+            bce = keras.losses.BinaryCrossentropy(from_logits=False)    # False due to 'sigmoid' activation layer
+            self.bce_loss.assign(bce(y, y_pred))
+            self.macro_bce_loss.assign(macro_bce(y, y_pred))
+        
         self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
         
         # log metrics
         with self.writer.as_default(step=self._train_counter):
-            tf.summary.scalar('batch_bce_loss', bce_loss)
-            tf.summary.scalar('batch_f1_loss', loss)
+            for metric in self.compiled_metrics.metrics:
+                tf.summary.scalar(metric.name, metric.result())
+            tf.summary.scalar('macro_bce_loss', self.macro_bce_loss)
+            tf.summary.scalar('bce_loss', self.bce_loss)
+            tf.summary.scalar('macro_soft_f1_loss', loss)
             tf.summary.image('input_image', x, 3)
         
         return self.compute_metrics(x, y, y_pred, None)
@@ -120,17 +120,20 @@ def create_vgg16(image_size, num_classes, writer):
     base_vgg.trainable = False
 
     model = BaseModel(writer)
-    model.add(layers.Input(shape=input_shape))
+    model.add(layers.Input(shape=input_shape, name='my_input'))
     for layer in base_vgg.layers:
         model.add(layer)
-    model.add(layers.Flatten(name='flatten'))
-    model.add(layers.Dense(256, activation='relu', name='fc1'))
-    model.add(layers.Dense(128, activation='relu', name='fc2'))
-    model.add(layers.Dense(num_classes, activation='sigmoid', name='output'))
+    model.add(layers.Flatten(name='my_flatten'))
+    model.add(layers.Dense(256, activation='relu', name='my_fc_1'))
+    model.add(layers.Dense(128, activation='relu', name='my_fc_2'))
+    model.add(layers.Dense(num_classes, activation='sigmoid', name='my_output'))
     
-    optimizer = keras.optimizers.Adam(learning_rate=1e-3)
+    optimizer = keras.optimizers.Adam(learning_rate=1e-5)
     
-    model.compile(loss=macro_soft_f1, optimizer=optimizer, metrics=[macro_f1])
+    model.compile(
+        loss=macro_soft_f1,
+        optimizer=optimizer,
+        metrics=[macro_f1])
     
     return model
 
@@ -153,12 +156,16 @@ def main(argv):
     OUTPUT_NAME = _OUTPUT_NAME.value + '_' + START_TIME
     
     board_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'board')
-    model_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'model')
     figs_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'figs')
+    export_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'model')
+    checkpoint_dir = os.path.join(export_dir, 'checkpoints', 'epoch-{epoch:02d}_validloss-{val_loss:.2f}.ckpt')
+    model_dir = os.path.join(export_dir, 'saved_model')
     
     os.makedirs(board_dir, exist_ok=True)
-    os.makedirs(model_dir, exist_ok=True)
     os.makedirs(figs_dir, exist_ok=True)
+    os.makedirs(export_dir, exist_ok=True)
+    os.makedirs(export_dir + '/checkpoints', exist_ok=True)
+    os.makedirs(export_dir + '/saved_model', exist_ok=True)
 
     #------------------- PRINT CONFIGURATION -------------------#
 
@@ -192,7 +199,7 @@ def main(argv):
 
     elif DATASET == 'MIMIC-CXR':
         # customLoader = MIMIC_CXR_JPG_Loader({'train': 360000, 'validate': 2900, 'test': 0}, project_folder)
-        data_loader = MIMIC_CXR_JPG_Loader({'train': 36000, 'validate': 2900, 'test': 0}, PROJ_PATH)
+        data_loader = MIMIC_CXR_JPG_Loader({'train': 30000, 'validate': 2900, 'test': 0}, PROJ_PATH)
         train_tfds, val_tfds, test_tfds = data_loader.load(['has_label', 'frontal_view', 'unambiguous_label'])
         num_classes = data_loader.info()['num_classes']
         for key, value in data_loader.info().items():
@@ -245,12 +252,13 @@ def main(argv):
 
     tensorboard_callback = keras.callbacks.TensorBoard(log_dir=board_dir, update_freq=20)   # log every 'update_freq' batch
     earlystopping_callback = keras.callbacks.EarlyStopping(
-        monitor='loss',
+        monitor='val_loss',
         verbose=1,
-        patience=3)
-    checkpoint_dir = os.path.join(model_dir, 'checkpoints/epoch-{epoch:02d}_valloss-{val_loss:.2f}.keras')
+        patience=5)
     checkpointer_callback = keras.callbacks.ModelCheckpoint(
         filepath=checkpoint_dir,
+        save_weights_only=True,
+        monitor='val_loss',
         verbose=1,
         save_best_only=True)
     
@@ -269,6 +277,10 @@ def main(argv):
         epochs=EPOCHS,
         validation_data=batched_val_tfds,
         callbacks=[tensorboard_callback, earlystopping_callback, checkpointer_callback])
+    
+    print_log('history:')
+    for key, value in history.history.items():
+            print_log(f'{key}: {value}')
 
 
     #------------------- RESULTS -------------------#
@@ -278,15 +290,10 @@ def main(argv):
     with summary_writer.as_default():
         tf.summary.trace_export(name="model_trace", step=0, profiler_outdir=board_dir)
 
-    # losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, figs_dir)
-    # # model_bce_losses, model_bce_val_losses, model_bce_macro_f1s, model_bce_val_macro_f1s = learning_curves(history_bce)
+    losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, figs_dir)
 
-    # # for batch in batched_val_tfds:
-    # #   print('probability of an image for classes (after finetuning):', model.predict(batch[0])[:1])
-    # #   break
-
-    # print("Macro soft-F1 loss: %.2f" %val_losses[-1])
-    # print("Macro F1-score: %.2f" %val_macro_f1s[-1])
+    print_log("Macro soft-F1 loss: %.2f" %val_losses[-1])
+    print_log("Macro F1-score: %.2f" %val_macro_f1s[-1])
 
     for batch in batched_val_tfds:
         show_prediction(*batch, model, figs_dir)
@@ -294,9 +301,8 @@ def main(argv):
   
   
     # #------------------- SAVE MODEL -------------------#
-    export_dir = os.path.join(model_dir, 'final_keras_model.keras')
-    model.save(export_dir)
-    print_log(f"Model was exported to this path: '{export_dir}'")
+    model.save(model_dir, save_format='tf')
+    print_log(f"Model was exported to this path: '{model_dir}'")
     
     print_log('\nDONE!')
 
