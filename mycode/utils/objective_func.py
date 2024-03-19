@@ -25,7 +25,7 @@
 import tensorflow as tf
 
 @tf.function
-def macro_soft_f1(y, y_hat):
+def soft_f1_loss(y, y_hat):
     """Compute the macro soft F1-score as a cost (average 1 - soft-F1 across all labels).
     Use probability values instead of binary predictions.
     
@@ -46,8 +46,29 @@ def macro_soft_f1(y, y_hat):
     macro_cost = tf.reduce_mean(cost) # average on all labels
     return macro_cost
 
+# @tf.function
+# def soft_f1_loss(y, y_hat):
+#     """Compute the macro soft F1-score as a cost (average 1 - soft-F1 across all labels).
+#     Use probability values instead of binary predictions.
+    
+#     Args:
+#         y (int32 Tensor): targets array of shape (BATCH_SIZE, N_LABELS)
+#         y_hat (float32 Tensor): probability matrix from forward propagation of shape (BATCH_SIZE, N_LABELS)
+        
+#     Returns:
+#         cost per sample (list Tensor): value of the cost function for each sample in the batch
+#     """
+#     y = tf.cast(y, tf.float32)
+#     y_hat = tf.cast(y_hat, tf.float32)
+#     tp = tf.reduce_sum(y_hat * y, axis=0)
+#     fp = tf.reduce_sum(y_hat * (1 - y), axis=0)
+#     fn = tf.reduce_sum((1 - y_hat) * y, axis=0)
+#     soft_f1 = 2*tp / (2*tp + fn + fp + 1e-16)
+#     cost = 1 - soft_f1 # reduce 1 - soft-f1 in order to increase soft-f1
+#     return cost
+
 @tf.function
-def macro_f1(y, y_hat, thresh=0.5):
+def f1_score(y, y_hat, thresh=0.5):
     """Compute the macro F1-score on a batch of observations (average F1 across labels)
     
     Args:
@@ -66,6 +87,7 @@ def macro_f1(y, y_hat, thresh=0.5):
     macro_f1 = tf.reduce_mean(f1)
     return macro_f1
 
+@tf.function
 def micro_bce(y, y_hat):
     """Compute the micro binary cross-entropy on a batch of observations.
     
@@ -84,7 +106,7 @@ def micro_bce(y, y_hat):
     cost = tf.reduce_mean(cross_entropy)
     return cost
 
-
+@tf.function
 def macro_bce(y, y_hat):
     """Compute the macro binary cross-entropy on a batch of observations (average across all labels).
     

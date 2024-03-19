@@ -128,11 +128,12 @@ class MIMIC_CXR_JPG_Loader:
         # Merge the data
         merged_data = pd.merge(metadata_csv, split_csv, on=['dicom_id', 'study_id', 'subject_id'])
         merged_data = merged_data.fillna('')
-        self.metadata['total_size'] = merged_data.shape[0]
+        self.metadata['all_data_size'] = merged_data.shape[0]
 
         # Filter the data if needed
         if filters is not None and len(filters) > 0:
             merged_data = self._filter_data(merged_data, filters)
+            self.metadata['all_data_filtered_size'] = merged_data.shape[0]
         
         # For debugging:
         # print('merged_data', merged_data.head())
@@ -153,16 +154,16 @@ class MIMIC_CXR_JPG_Loader:
             test_split = test_split.sample(n=self._in_split_size['test'], random_state=42)
 
         self.metadata['split_size'] = { 'train': train_split.shape[0], 'validate': val_split.shape[0], 'test': test_split.shape[0] }
-        self.metadata['split_size_frac'] = {key: value / self.metadata['total_size'] for key, value in self.metadata['split_size'].items()}
+        # self.metadata['split_size_frac'] = {key: value / self.metadata['total_size'] for key, value in self.metadata['split_size'].items()}
         
         # Create TensorFlow datasets
         req_columns = ['subject_id', 'study_id', 'dicom_id']
         train_dataset = tf.data.Dataset.from_tensor_slices(train_split[req_columns])
         val_dataset = tf.data.Dataset.from_tensor_slices(val_split[req_columns])
         test_dataset = tf.data.Dataset.from_tensor_slices(test_split[req_columns])
-        train_dataset = train_dataset.map(self._preprocess_wrapper)
-        val_dataset = val_dataset.map(self._preprocess_wrapper)
-        test_dataset = test_dataset.map(self._preprocess_wrapper)
+        train_dataset = train_dataset.map(self._preprocess_wrapper, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        val_dataset = val_dataset.map(self._preprocess_wrapper, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        test_dataset = test_dataset.map(self._preprocess_wrapper, num_parallel_calls=tf.data.experimental.AUTOTUNE)
         
         # train_dataset = train_dataset.map(lambda x, y, info: (tf.ensure_shape(y, [self.metadata['num_classes']])))
         # val_dataset = val_dataset.map(lambda x, y, info: (

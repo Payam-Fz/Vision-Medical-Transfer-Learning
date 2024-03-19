@@ -52,8 +52,8 @@ def learning_curves(history, fig_path):
     loss = history.history['loss']
     val_loss = history.history['val_loss']
 
-    macro_f1 = history.history['macro_f1']
-    val_macro_f1 = history.history['val_macro_f1']
+    macro_f1 = history.history['f1_score']
+    val_macro_f1 = history.history['val_f1_score']
     
     epochs = len(loss)
 

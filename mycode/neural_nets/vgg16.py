@@ -37,7 +37,7 @@ from utils.augmentation import preprocess_image
 from utils.log import get_curr_datetime, print_time, print_log
 from utils.analysis import learning_curves, show_prediction
 from loader.mimic_cxr_jpg_loader import MIMIC_CXR_JPG_Loader
-from utils.objective_func import macro_soft_f1, macro_f1, macro_bce
+from utils.objective_func import soft_f1_loss, f1_score, macro_bce
 
 #------------------- PARAMS -------------------#
 
@@ -56,16 +56,22 @@ _BATCH_SIZE = flags.DEFINE_integer(
     'batch_size', 64, 'Batch size for training.'
 )
 _IMAGE_SIZE = flags.DEFINE_integer(
-  'image_size', 448, 'Input image size.'
+    'image_size', 448, 'Input image size.'
+)
+_TRAIN_SIZE = flags.DEFINE_integer(
+    'train_size', 10000, 'Size of training dataset.'
 )
 _LEARNING_RATE = flags.DEFINE_float(
     'learning_rate', 0.1, 'Initial learning rate per batch size.'
 )
 _MOMENTUM = flags.DEFINE_float(
-  'momentum', 0.9, 'Momentum parameter.'
+    'momentum', 0.9, 'Momentum parameter.'
 )
 _WEIGHT_DECAY = flags.DEFINE_float(
     'weight_decay', 1e-6, 'Amount of weight decay to use.'
+)
+_GPU_MEM_LIMIT = flags.DEFINE_integer(
+    'gpu_mem_limit', 11000, 'Limit in megabytes.'
 )
 _LOAD_CHECKPOINT = flags.DEFINE_string(
     'load_checkpoint', None, 'Address of checkpoint to be used. None if no checkpoint'
@@ -98,8 +104,6 @@ class BaseModel(keras.models.Sequential):
     def __init__(self, writer):
         super().__init__()
         self.writer = writer
-        self.macro_bce_loss = tf.Variable(float('inf'), trainable=False)
-        self.bce_loss = tf.Variable(float('inf'), trainable=False)
 
     # override train_step to log other metrics
     def train_step(self, data):
@@ -108,10 +112,6 @@ class BaseModel(keras.models.Sequential):
         with tf.GradientTape() as tape:
             y_pred = self(x, training=True)
             loss = self.compiled_loss(y, y_pred)
-            # macro_soft_loss = macro_soft_f1(y, y_pred)
-            bce = keras.losses.BinaryCrossentropy(from_logits=False)    # False due to 'sigmoid' activation layer
-            self.bce_loss.assign(bce(y, y_pred))
-            self.macro_bce_loss.assign(macro_bce(y, y_pred))
         
         self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
         
@@ -119,16 +119,12 @@ class BaseModel(keras.models.Sequential):
         with self.writer.as_default(step=self._train_counter):
             for metric in self.compiled_metrics.metrics:
                 tf.summary.scalar(metric.name, metric.result())
-            tf.summary.scalar('macro_bce_loss', self.macro_bce_loss)
-            tf.summary.scalar('bce_loss', self.bce_loss)
-            tf.summary.scalar('macro_soft_f1_loss', loss)
-            tf.summary.image('input_image', x, 3)
+            tf.summary.scalar('bce_loss', loss)
+            tf.summary.image('input_image', x, max_outputs=10)
         
         return self.compute_metrics(x, y, y_pred, None)
 
-def create_vgg16(image_size, num_classes, writer, is_transfer_learning):
-    input_shape = (*image_size, 3)
-
+def create_vgg16(input_shape, num_classes, writer, is_transfer_learning):
     base_vgg = VGG16(weights='imagenet', include_top=False, input_shape=input_shape)
     if is_transfer_learning:
         base_vgg.trainable = False
@@ -142,13 +138,6 @@ def create_vgg16(image_size, num_classes, writer, is_transfer_learning):
     model.add(layers.Dense(128, activation='relu', name='my_fc_2'))
     model.add(layers.Dense(num_classes, activation='sigmoid', name='my_output'))
     
-    optimizer = keras.optimizers.Adam(learning_rate=1e-5)
-    
-    model.compile(
-        loss=macro_soft_f1,
-        optimizer=optimizer,
-        metrics=[macro_f1])
-    
     return model
 
 def main(argv):
@@ -156,15 +145,17 @@ def main(argv):
         raise app.UsageError('Too many command-line arguments.')
     
     #------------------- VARIABLES -------------------#
+        
+    LOAD_CHECKPOINT = _LOAD_CHECKPOINT.value
+    MODE = _MODE.value
     
     DATASET = _DATASET.value #@param ["Chexpert", "Camelyon", "MIMIC-CXR", "Noise"]
     BATCH_SIZE = _BATCH_SIZE.value
+    TRAIN_SIZE = _TRAIN_SIZE.value
+    IMAGE_SIZE = (_IMAGE_SIZE.value, _IMAGE_SIZE.value)
     LEARNING_RATE = _LEARNING_RATE.value
     EPOCHS = _EPOCHS.value
     WEIGHT_DECAY = _WEIGHT_DECAY.value
-    IMAGE_SIZE = (_IMAGE_SIZE.value, _IMAGE_SIZE.value)
-    LOAD_CHECKPOINT = _LOAD_CHECKPOINT.value
-    MODE = _MODE.value
     CHANNELS = 3
 
     PROJ_PATH = get_proj_path()
@@ -172,6 +163,8 @@ def main(argv):
     OUTPUT_NAME = _OUTPUT_NAME.value + '_' + START_TIME
     
     TRANSFER_LEARNING = _TRANSFER_LEARNING.value
+    
+    #------------------- OUTPUT DIRECTORIES -------------------#
     
     board_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'board')
     figs_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'figs')
@@ -187,16 +180,25 @@ def main(argv):
 
     #------------------- PRINT CONFIGURATION -------------------#
 
-    # Print date and time
-    print_log("Start:", START_TIME)
-    print_log('GPU:', tf.config.list_physical_devices('GPU'))
-    print_log('Dataset:', DATASET)
-    print_log('Epochs:', EPOCHS)
-    print_log('Batch size:', BATCH_SIZE)
-    print_log('Image size:', IMAGE_SIZE)
+    print_log(f'Code version: {1}')
+    print_log('subclassed + bce loss + large batch')
+    print_log('\n------------------ Configuration ------------------')
+    print_log(f'Start: {START_TIME}\n')
+    print_log(f'GPUs: {tf.config.list_physical_devices("GPU")}')
+    print_log(f'CPUs: {tf.config.list_physical_devices("CPU")}')
+    print_log(f'Dataset: {DATASET}')
+    print_log(f'Batch size: {BATCH_SIZE}')
+    print_log(f'Training Dataset Size: {TRAIN_SIZE}')
+    print_log(f'Epochs: {EPOCHS}')
+    print_log(f'Image size: {IMAGE_SIZE}')
+    print_log(f'\nIs Transfer learning: {TRANSFER_LEARNING}')
 
     #------------------- LOAD DATA -------------------#
-
+    
+    # Chexpert: TFDS.has Supervised - produces binary labels the way we were using them
+    #           Chexpert data loader fails unless you have it downloaded - download & put in this directory
+    #           Have self-selectors
+    # Noise:    fake tfds for testing
     if DATASET == 'Noise':
         def generate_fake_tfds_dataset(width, height, channels, num_classes, N=1000, data_type=tf.float32):
             train_examples = np.random.normal(size=[N, width, height, channels])
@@ -216,21 +218,19 @@ def main(argv):
         raise Exception("not implemented. Please download the chexpert data manually and add code to read here.")
 
     elif DATASET == 'MIMIC-CXR':
-        # customLoader = MIMIC_CXR_JPG_Loader({'train': 360000, 'validate': 2900, 'test': 0}, project_folder)
-        data_loader = MIMIC_CXR_JPG_Loader({'train': 30000, 'validate': 2900, 'test': 0}, PROJ_PATH)
+        # max size: {'train': 360000, 'validate': 2900, 'test': 0}
+        data_loader = MIMIC_CXR_JPG_Loader({'train': TRAIN_SIZE, 'validate': 2900, 'test': 0}, PROJ_PATH)
         train_tfds, val_tfds, test_tfds = data_loader.load(['has_label', 'frontal_view', 'unambiguous_label'])
         num_classes = data_loader.info()['num_classes']
+        
+        print_log('\n------------------ Data ------------------')
         for key, value in data_loader.info().items():
             print_log(f'{key}: {value}')
 
     else:
         raise Exception('The Data Type specified does not have data loading defined.')
 
-    
-    # Chexpert: TFDS.has Supervised - produces binary labels the way we were using them
-    #           Chexpert data loader fails unless you have it downloaded - download & put in this directory
-    #           Have self-selectors
-    # Noise:    fake tfds for testing
+
     @tf.function
     def _preprocess_train(x, y, info=None):
         x = preprocess_image(x, *IMAGE_SIZE,
@@ -247,10 +247,10 @@ def main(argv):
         y = tf.ensure_shape(y, [num_classes])
         return x, y
 
-    train_tfds = train_tfds.shuffle(buffer_size=2*BATCH_SIZE)
-    batched_train_tfds = train_tfds.map(_preprocess_train).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
-    val_tfds = val_tfds.shuffle(buffer_size=2*BATCH_SIZE)
-    batched_val_tfds = val_tfds.map(_preprocess_val).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    train_tfds = train_tfds.map(_preprocess_train, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    batched_train_tfds = train_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    val_tfds = val_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    batched_val_tfds = val_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
 
     for f, l in batched_train_tfds.take(1):
         print_log("Shape of image batch:", f.shape.as_list())
@@ -260,23 +260,38 @@ def main(argv):
 
     # Define the Keras TensorBoard callback.
     summary_writer = tf.summary.create_file_writer(board_dir)
-    tf.summary.trace_on(graph=True, profiler=True)
+    # tf.summary.trace_on(graph=True)
 
-    tensorboard_callback = keras.callbacks.TensorBoard(log_dir=board_dir, update_freq=20)   # log every 'update_freq' batch
+    tensorboard_callback = keras.callbacks.TensorBoard(
+        log_dir=board_dir,
+        update_freq=20,   # log every 'update_freq' batch
+        profile_batch=(24,40))  # do the profiling for this range of batch
     earlystopping_callback = keras.callbacks.EarlyStopping(
-        monitor='val_loss',
+        monitor='loss',
         verbose=1,
-        patience=5)
+        patience=20)
     checkpointer_callback = keras.callbacks.ModelCheckpoint(
         filepath=checkpoint_dir,
         save_weights_only=True,
         monitor='val_loss',
         verbose=1,
-        save_best_only=True)
+        save_best_only=False)
     
     #------------------- CREATE MODEL -------------------#
     
-    model = create_vgg16(IMAGE_SIZE, num_classes, summary_writer, is_transfer_learning=TRANSFER_LEARNING)
+    model = create_vgg16(
+        input_shape=(*IMAGE_SIZE,CHANNELS),
+        num_classes=num_classes,
+        writer=summary_writer,
+        is_transfer_learning=TRANSFER_LEARNING)
+    
+    bce = keras.losses.BinaryCrossentropy(from_logits=False)
+
+    model.compile(
+        loss=bce,
+        optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
+        metrics=[f1_score, soft_f1_loss])
+    
     if LOAD_CHECKPOINT:
         load_checkpoint_dir = os.path.join(PROJ_PATH,LOAD_CHECKPOINT)
         latest = tf.train.latest_checkpoint(load_checkpoint_dir)
@@ -303,11 +318,11 @@ def main(argv):
                 print_log(f'{key}: {value}')
         
         losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, figs_dir)
-        print_log("Macro soft-F1 loss: %.2f" %val_losses[-1])
-        print_log("Macro F1-score: %.2f" %val_macro_f1s[-1])
+        print_log("Validation loss: %.2f" %val_losses[-1])
+        print_log("Validation Macro F1-score: %.2f" %val_macro_f1s[-1])
         
-        with summary_writer.as_default():
-            tf.summary.trace_export(name="model_trace", step=0, profiler_outdir=board_dir)
+        # with summary_writer.as_default():
+        #     tf.summary.trace_export(name="model_trace", step=0, profiler_outdir=board_dir)
 
 
     #------------------- RESULTS -------------------#
@@ -317,9 +332,11 @@ def main(argv):
         break
   
   
-    # #------------------- SAVE MODEL -------------------#
-    model.save(model_dir, save_format='tf')
-    print_log(f"Model was exported to this path: '{model_dir}'")
+    #------------------- SAVE MODEL -------------------#
+    
+    if MODE != 'eval':
+        model.save(model_dir, save_format='tf')
+        print_log(f"Model was exported to this path: '{model_dir}'")
     
     print_log('\nDONE!')
 
