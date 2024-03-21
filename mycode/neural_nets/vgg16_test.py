@@ -70,9 +70,9 @@ _MOMENTUM = flags.DEFINE_float(
 _WEIGHT_DECAY = flags.DEFINE_float(
     'weight_decay', 1e-6, 'Amount of weight decay to use.'
 )
-_GPU_MEM_LIMIT = flags.DEFINE_integer(
-    'gpu_mem_limit', 11000, 'Limit in megabytes.'
-)
+# _GPU_MEM_LIMIT = flags.DEFINE_integer(
+#     'gpu_mem_limit', 11000, 'Limit in megabytes.'
+# )
 _LOAD_CHECKPOINT = flags.DEFINE_string(
     'load_checkpoint', None, 'Address of checkpoint to be used. None if no checkpoint'
 )
@@ -88,13 +88,13 @@ gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
         # Currently, memory growth needs to be the same across GPUs
-        for gpu in gpus:
+        # for gpu in gpus:
             # tf.config.experimental.set_memory_growth(gpu, True)
-            tf.config.set_logical_device_configuration(
-                gpu,
-                [tf.config.LogicalDeviceConfiguration(memory_limit=10240)])
+        #     tf.config.set_logical_device_configuration(
+        #         gpu,
+        #         [tf.config.LogicalDeviceConfiguration(memory_limit=10240)])
         logical_gpus = tf.config.list_logical_devices('GPU')
-        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+        print_log(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
     except RuntimeError as e:
         # Memory growth must be set before GPUs have been initialized
         print(e)
@@ -183,15 +183,17 @@ def main(argv):
     print_log(f'Code version: {5}')
     print_log('subclassed + bce loss + large batch')
     print_log('\n------------------ Configuration ------------------')
-    print_log(f'Start: {START_TIME}\n')
-    print_log(f'GPUs: {tf.config.list_physical_devices("GPU")}')
-    print_log(f'CPUs: {tf.config.list_physical_devices("CPU")}')
-    print_log(f'Dataset: {DATASET}')
+    print_log(f'Start: {START_TIME}')
+    print_log(f'\nMode: {MODE}')
+    print_log(f'Is Transfer learning: {TRANSFER_LEARNING}')
+    print_log(f'\nDataset: {DATASET}')
     print_log(f'Training Dataset Size: {TRAIN_SIZE}')
-    print_log(f'Epochs: {EPOCHS}')
-    print_log(f'Global Batch size: {BATCH_SIZE}')
+    print_log(f'Batch size: {BATCH_SIZE}')
     print_log(f'Image size: {IMAGE_SIZE}')
-    print_log(f'\nIs Transfer learning: {TRANSFER_LEARNING}')
+    print_log(f'Epochs: {EPOCHS}')
+    print_log(f'Learning Rate: {LEARNING_RATE}')
+    print_log(f'\nGPUs: {tf.config.list_physical_devices("GPU")}')
+    print_log(f'CPUs: {tf.config.list_physical_devices("CPU")}')
 
     #------------------- LOAD DATA -------------------#
 
@@ -265,7 +267,7 @@ def main(argv):
     tensorboard_callback = keras.callbacks.TensorBoard(
         log_dir=board_dir,
         update_freq=20,   # log every 'update_freq' batch
-        profile_batch=(24,40))  # do the profiling for this range of batch
+        profile_batch=(10,40))  # do the profiling for this range of batch
     # earlystopping_callback = keras.callbacks.EarlyStopping(
     #     monitor='val_loss',
     #     verbose=1,
