@@ -37,7 +37,7 @@ from utils.augmentation import preprocess_image
 from utils.log import get_curr_datetime, print_time, print_log
 from utils.analysis import learning_curves, show_prediction
 from loader.mimic_cxr_jpg_loader import MIMIC_CXR_JPG_Loader
-from utils.objective_func import soft_f1_loss, f1_score, macro_bce
+from utils.objective_func import soft_f1_loss, macro_f1_score, macro_bce
 
 #------------------- PARAMS -------------------#
 
@@ -147,7 +147,7 @@ def create_vgg16(image_size, num_classes, writer, is_transfer_learning):
     model.compile(
         loss=soft_f1_loss,
         optimizer=optimizer,
-        metrics=[f1_score])
+        metrics=[macro_f1_score])
     
     return model
 

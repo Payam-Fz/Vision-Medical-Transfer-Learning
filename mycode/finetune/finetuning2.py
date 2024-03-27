@@ -41,7 +41,7 @@ import matplotlib.pyplot as plt
 # LARS optimizer from lars_optimizer.py in SimCLR repository
 from lars_optimizer import LARSOptimizer
 # macro_soft_f1 optimizer from multi-label-soft-f1 repository
-from objective_func import soft_f1_loss, f1_score
+from objective_func import soft_f1_loss, macro_f1_score
 # Preprocessing functions from data_util.py in SimCLR repository
 from utils.augmentation import preprocess_image
 # utilities to plot, time, and score
@@ -235,7 +235,7 @@ def main(argv):
   model.compile(
     optimizer=optimizer,
     loss=soft_f1_loss,
-    metrics=[f1_score])
+    metrics=[macro_f1_score])
 
   #------------------- PERFORM FINETUNING -------------------#
 

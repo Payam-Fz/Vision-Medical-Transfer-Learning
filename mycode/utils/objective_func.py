@@ -68,7 +68,7 @@ def soft_f1_loss(y, y_hat):
 #     return cost
 
 @tf.function
-def f1_score(y, y_hat, thresh=0.5):
+def macro_f1_score(y, y_hat, thresh=0.5):
     """Compute the macro F1-score on a batch of observations (average F1 across labels)
     
     Args:
@@ -79,6 +79,7 @@ def f1_score(y, y_hat, thresh=0.5):
     Returns:
         macro_f1 (scalar Tensor): value of macro F1 for the batch
     """
+    y = tf.cast(y, tf.float32)
     y_pred = tf.cast(tf.greater(y_hat, thresh), tf.float32)
     tp = tf.cast(tf.math.count_nonzero(y_pred * y, axis=0), tf.float32)
     fp = tf.cast(tf.math.count_nonzero(y_pred * (1 - y), axis=0), tf.float32)
@@ -154,3 +155,64 @@ def macro_double_soft_f1(y, y_hat):
     macro_cost = tf.reduce_mean(cost) # average on all labels
     return macro_cost
 
+@tf.function
+def global_accuracy(y, y_hat, thresh=0.5):
+    """Compute the global accuracy for a multi-label classification task.
+    
+    Args:
+        y (int32 Tensor): labels array of shape (BATCH_SIZE, N_LABELS)
+        y_hat (float32 Tensor): probability matrix from forward propagation of shape (BATCH_SIZE, N_LABELS)
+        thresh: probability value above which we predict positive
+        
+    Returns:
+        global_acc (scalar Tensor): value of global accuracy for the batch
+    """
+    y = tf.cast(y, tf.float32)
+    y_pred = tf.cast(tf.greater(y_hat, thresh), tf.float32)
+    tp = tf.cast(tf.math.count_nonzero(y_pred * y, axis=None), tf.float32)
+    fp = tf.cast(tf.math.count_nonzero(y_pred * (1 - y), axis=None), tf.float32)
+    tn = tf.cast(tf.math.count_nonzero((1 - y_pred) * (1 - y), axis=None), tf.float32)
+    fn = tf.cast(tf.math.count_nonzero((1 - y_pred) * y, axis=None), tf.float32)
+    
+    global_acc = (tp + tn) / (tp + tn + fp + fn + 1e-16)  # Adding small value to avoid division by zero
+    return global_acc
+
+@tf.function
+def global_precision(y, y_hat, thresh=0.5):
+    """Compute the global precision for a multi-label classification task.
+    
+    Args:
+        y (int32 Tensor): labels array of shape (BATCH_SIZE, N_LABELS)
+        y_hat (float32 Tensor): probability matrix from forward propagation of shape (BATCH_SIZE, N_LABELS)
+        thresh: probability value above which we predict positive
+        
+    Returns:
+        global_precision (scalar Tensor): value of global precision for the batch
+    """
+    y = tf.cast(y, tf.float32)
+    y_pred = tf.cast(tf.greater(y_hat, thresh), tf.float32)
+    tp = tf.cast(tf.math.count_nonzero(y_pred * y, axis=None), tf.float32)
+    fp = tf.cast(tf.math.count_nonzero(y_pred * (1 - y), axis=None), tf.float32)
+
+    global_precision = tp / (tp + fp + 1e-16)  # Adding small value to avoid division by zero
+    return global_precision
+
+@tf.function
+def global_recall(y, y_hat, thresh=0.5):
+    """Compute the global recall for a multi-label classification task.
+    
+    Args:
+        y (int32 Tensor): labels array of shape (BATCH_SIZE, N_LABELS)
+        y_hat (float32 Tensor): probability matrix from forward propagation of shape (BATCH_SIZE, N_LABELS)
+        thresh: probability value above which we predict positive
+        
+    Returns:
+        global_recall (scalar Tensor): value of global recall for the batch
+    """
+    y = tf.cast(y, tf.float32)
+    y_pred = tf.cast(tf.greater(y_hat, thresh), tf.float32)
+    tp = tf.cast(tf.math.count_nonzero(y_pred * y, axis=None), tf.float32)
+    fn = tf.cast(tf.math.count_nonzero((1 - y_pred) * y, axis=None), tf.float32)
+    
+    global_recall = tp / (tp + fn + 1e-16)  # Adding small value to avoid division by zero
+    return global_recall

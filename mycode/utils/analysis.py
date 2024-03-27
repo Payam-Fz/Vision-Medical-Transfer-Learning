@@ -189,13 +189,21 @@ def show_prediction(image, gt, model, fig_path):
     print_log("Saving to", filename)
     plt.savefig(filename)
     
+def log_eval_metrics(dataset, model, metrics):
+    metric_sum = {metric.name: tf.Variable(0.0, dtype=tf.float32) for metric in metrics}
+    num_batches = tf.Variable(0, dtype=tf.int32)
+    for batch in dataset:
+        x, y = batch
+        y_hat = model.predict(x)
+        y_hat = tf.cast(y_hat, tf.float32)
+        num_batches.assign_add(1)
+        for metric in metrics:
+            metric_value = metric(y, y_hat)
+            metric_sum[metric.name].assign_add(tf.reduce_sum(metric_value))
     
+    print('total_samples', num_batches)
+    avg_metrics = {name: value / tf.cast(num_batches, tf.float32) for name, value in metric_sum.items()}
     
-    # plt.figure(figsize=(8,4))
-    # plt.imshow(image)
-    # plt.title('\n\nGT\n{}\n\nPrediction\n{}\n'.format(gt, list(prediction)), fontsize=9)
+    for name, value in avg_metrics.items():
+        print_log(f'{name}: {value.numpy()}')
     
-    # filename = os.path.join(fig_path, "sample_predict.png")
-    # print("Saving to", filename)
-    # plt.savefig(filename)
-    # plt.show()

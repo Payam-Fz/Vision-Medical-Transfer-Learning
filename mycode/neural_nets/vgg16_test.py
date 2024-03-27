@@ -37,7 +37,7 @@ from utils.augmentation import preprocess_image
 from utils.log import get_curr_datetime, print_time, print_log
 from utils.analysis import learning_curves, show_prediction
 from loader.mimic_cxr_jpg_loader import MIMIC_CXR_JPG_Loader
-from utils.objective_func import soft_f1_loss, f1_score, macro_bce
+from utils.objective_func import soft_f1_loss, macro_f1_score, macro_bce
 
 #------------------- PARAMS -------------------#
 
@@ -292,7 +292,7 @@ def main(argv):
     model.compile(
         loss=bce,
         optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
-        metrics=[f1_score, soft_f1_loss])
+        metrics=[macro_f1_score, soft_f1_loss])
     
     if LOAD_CHECKPOINT:
         load_checkpoint_dir = os.path.join(PROJ_PATH,LOAD_CHECKPOINT)

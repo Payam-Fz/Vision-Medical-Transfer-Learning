@@ -35,9 +35,9 @@ import tensorboard
 
 from utils.augmentation import preprocess_image
 from utils.log import get_curr_datetime, print_time, print_log
-from utils.analysis import learning_curves, show_prediction
+from utils.analysis import learning_curves, show_prediction, log_eval_metrics
 from loader.mimic_cxr_jpg_loader import MIMIC_CXR_JPG_Loader
-from utils.objective_func import soft_f1_loss, f1_score, macro_bce
+from utils.objective_func import soft_f1_loss, macro_f1_score, macro_bce, global_accuracy, global_precision, global_recall
 
 #------------------- PARAMS -------------------#
 
@@ -74,14 +74,14 @@ _WEIGHT_DECAY = flags.DEFINE_float(
 #     'gpu_mem_limit', 11000, 'Limit in megabytes.'
 # )
 _LOAD_CHECKPOINT = flags.DEFINE_string(
-    'load_checkpoint', None, 'Address of checkpoint to be used. None if no checkpoint'
+    'load_checkpoint', None, 'Address of checkpoint to be used. None if no checkpoint.'
 )
 _MODE = flags.DEFINE_string(
     'mode', 'train_then_eval', '["train_then_eval", "eval" ]'
 )
 
-_TRANSFER_LEARNING = flags.DEFINE_boolean(
-    'transfer_learning', True, 'Whether freeze the original model weights.'
+_UNFREEZE_BLOCKS = flags.DEFINE_integer(
+    'unfreeze_blocks', 0, 'Will unfreeze this number of blocks from the end of the convolution.'
 )
 
 gpus = tf.config.list_physical_devices('GPU')
@@ -124,10 +124,9 @@ class BaseModel(keras.models.Sequential):
         
         return self.compute_metrics(x, y, y_pred, None)
 
-def create_vgg16(input_shape, num_classes, writer, is_transfer_learning):
+def create_vgg16(input_shape, num_classes, writer):
     base_vgg = VGG16(weights='imagenet', include_top=False, input_shape=input_shape)
-    if is_transfer_learning:
-        base_vgg.trainable = False
+    base_vgg.trainable = False
 
     model = BaseModel(writer)
     model.add(layers.Input(shape=input_shape, name='my_input'))
@@ -145,7 +144,7 @@ def main(argv):
         raise app.UsageError('Too many command-line arguments.')
     
     #------------------- VARIABLES -------------------#
-        
+    
     LOAD_CHECKPOINT = _LOAD_CHECKPOINT.value
     MODE = _MODE.value
     
@@ -162,7 +161,7 @@ def main(argv):
     START_TIME = get_curr_datetime()
     OUTPUT_NAME = _OUTPUT_NAME.value + '_' + START_TIME
     
-    TRANSFER_LEARNING = _TRANSFER_LEARNING.value
+    UNFREEZE_BLOCKS = _UNFREEZE_BLOCKS.value
     
     #------------------- OUTPUT DIRECTORIES -------------------#
     
@@ -185,7 +184,7 @@ def main(argv):
     print_log('\n------------------ Configuration ------------------')
     print_log(f'Start: {START_TIME}')
     print_log(f'\nMode: {MODE}')
-    print_log(f'Frozen weights: {TRANSFER_LEARNING}')
+    print_log(f'Unfreeze blocks: {UNFREEZE_BLOCKS}')
     print_log(f'Continue from checkpoint: {False if LOAD_CHECKPOINT is None else LOAD_CHECKPOINT}')
     print_log(f'\nDataset: {DATASET}')
     print_log(f'Training Dataset Size: {TRAIN_SIZE}')
@@ -222,7 +221,7 @@ def main(argv):
 
     elif DATASET == 'MIMIC-CXR':
         # max size: {'train': 360000, 'validate': 2900, 'test': 0}
-        data_loader = MIMIC_CXR_JPG_Loader({'train': TRAIN_SIZE, 'validate': 2900, 'test': 0}, PROJ_PATH)
+        data_loader = MIMIC_CXR_JPG_Loader({'train': TRAIN_SIZE, 'validate': 2900, 'test': 500}, PROJ_PATH)
         train_tfds, val_tfds, test_tfds = data_loader.load(['has_label', 'frontal_view', 'unambiguous_label'])
         num_classes = data_loader.info()['num_classes']
         
@@ -263,7 +262,7 @@ def main(argv):
 
     # Define the Keras TensorBoard callback.
     summary_writer = tf.summary.create_file_writer(board_dir)
-    # tf.summary.trace_on(graph=True)
+    tf.summary.trace_on(graph=True)
 
     tensorboard_callback = keras.callbacks.TensorBoard(
         log_dir=board_dir,
@@ -285,15 +284,30 @@ def main(argv):
     model = create_vgg16(
         input_shape=(*IMAGE_SIZE,CHANNELS),
         num_classes=num_classes,
-        writer=summary_writer,
-        is_transfer_learning=TRANSFER_LEARNING)
+        writer=summary_writer)
+    
+    # Unfreeze convolution blocks
+    if UNFREEZE_BLOCKS > 0:
+        total_blocks = 5
+        for layer in model.layers:
+            layer_name = layer.name
+            if layer_name.startswith('block'):
+                block_number = int(layer_name.split('_')[0].replace('block', ''))
+                if UNFREEZE_BLOCKS >= total_blocks - block_number + 1:
+                    layer.trainable = True
     
     bce = keras.losses.BinaryCrossentropy(from_logits=False)
+    auc = keras.metrics.AUC(
+        curve='ROC',
+        name='AUC',
+        multi_label=True,
+        num_labels=num_classes,
+        from_logits=False)
 
     model.compile(
         loss=bce,
         optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
-        metrics=[f1_score, soft_f1_loss])
+        metrics=[macro_f1_score, soft_f1_loss, auc, global_accuracy, global_precision, global_recall])
     
     if LOAD_CHECKPOINT:
         load_checkpoint_dir = os.path.join(PROJ_PATH,LOAD_CHECKPOINT)
@@ -301,7 +315,9 @@ def main(argv):
         model.load_weights(latest)
     
     print(model.summary())
-
+    print("Total trainable weights: {}".format(len(model.trainable_weights)))
+    for weight in model.trainable_weights:
+        print(weight.name)
 
     #------------------- PERFORM TRAINING -------------------#
 
@@ -330,10 +346,18 @@ def main(argv):
 
     #------------------- RESULTS -------------------#
     
-    for batch in batched_val_tfds:
+    test_tfds = test_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    batched_test_tfds = test_tfds.shuffle(buffer_size=10*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    
+    for batch in batched_test_tfds:
         show_prediction(*batch, model, figs_dir)
         break
-  
+    
+    log_eval_metrics(
+        dataset=batched_test_tfds,
+        model=model,
+        metrics=[bce, auc, macro_f1_score, soft_f1_loss, global_accuracy, global_precision, global_recall])
+    
   
     #------------------- SAVE MODEL -------------------#
     
