@@ -52,8 +52,8 @@ def learning_curves(history, fig_path):
     loss = history.history['loss']
     val_loss = history.history['val_loss']
 
-    macro_f1 = history.history['f1_score']
-    val_macro_f1 = history.history['val_f1_score']
+    macro_f1 = history.history['macro_f1_score']
+    val_macro_f1 = history.history['val_macro_f1_score']
     
     epochs = len(loss)
 
@@ -188,7 +188,8 @@ def show_prediction(image, gt, model, fig_path):
     filename = os.path.join(fig_path, "predict_sample.png")
     print_log("Saving to", filename)
     plt.savefig(filename)
-    
+
+
 def log_eval_metrics(dataset, model, metrics):
     metric_sum = {metric.name: tf.Variable(0.0, dtype=tf.float32) for metric in metrics}
     num_batches = tf.Variable(0, dtype=tf.int32)
@@ -201,9 +202,8 @@ def log_eval_metrics(dataset, model, metrics):
             metric_value = metric(y, y_hat)
             metric_sum[metric.name].assign_add(tf.reduce_sum(metric_value))
     
-    print('total_samples', num_batches)
     avg_metrics = {name: value / tf.cast(num_batches, tf.float32) for name, value in metric_sum.items()}
     
+    print_log(f'Result of testing on {num_batches} batches:')
     for name, value in avg_metrics.items():
-        print_log(f'{name}: {value.numpy()}')
-    
+        print_log(f'\t{name}: {value.numpy()}')

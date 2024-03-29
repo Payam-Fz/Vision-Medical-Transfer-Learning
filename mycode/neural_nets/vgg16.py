@@ -31,7 +31,6 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.applications import ResNet50, VGG16
-import tensorboard
 
 from utils.augmentation import preprocess_image
 from utils.log import get_curr_datetime, print_time, print_log
@@ -80,9 +79,15 @@ _MODE = flags.DEFINE_string(
     'mode', 'train_then_eval', '["train_then_eval", "eval" ]'
 )
 
-_UNFREEZE_BLOCKS = flags.DEFINE_integer(
-    'unfreeze_blocks', 0, 'Will unfreeze this number of blocks from the end of the convolution.'
+_MIN_UNFREEZE_BLOCKS = flags.DEFINE_integer(
+    'min_unfreeze_blocks', 0, 'Will unfreeze this number of blocks before starting the training.'
 )
+_MAX_UNFREEZE_BLOCKS = flags.DEFINE_integer(
+    'max_unfreeze_blocks', 0, 'Will unfreeze this number of blocks by the end of the training.'
+)
+# _GRADUAL_UNFREEZE = flags.DEFINE_boolean(
+#     'gradual_unfreeze', False, 'Will unfreeze blocks one after the other. This will overrite the "unfreeze_blocks" argument.'
+# )
 
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
@@ -101,8 +106,11 @@ if gpus:
 
 class BaseModel(keras.models.Sequential):
     
-    def __init__(self, writer):
+    def __init__(self):
         super().__init__()
+        self.writer = None
+        
+    def set_writer(self, writer):
         self.writer = writer
 
     # override train_step to log other metrics
@@ -119,16 +127,16 @@ class BaseModel(keras.models.Sequential):
         with self.writer.as_default(step=self._train_counter):
             for metric in self.compiled_metrics.metrics:
                 tf.summary.scalar(metric.name, metric.result())
-            tf.summary.scalar('bce_loss', loss)
+            tf.summary.scalar('loss', loss)
             tf.summary.image('input_image', x, max_outputs=10)
         
         return self.compute_metrics(x, y, y_pred, None)
 
-def create_vgg16(input_shape, num_classes, writer):
+def create_vgg16(input_shape, num_classes):
     base_vgg = VGG16(weights='imagenet', include_top=False, input_shape=input_shape)
     base_vgg.trainable = False
 
-    model = BaseModel(writer)
+    model = BaseModel()
     model.add(layers.Input(shape=input_shape, name='my_input'))
     for layer in base_vgg.layers:
         model.add(layer)
@@ -138,6 +146,37 @@ def create_vgg16(input_shape, num_classes, writer):
     model.add(layers.Dense(num_classes, activation='sigmoid', name='my_output'))
     
     return model
+
+def unfreeze_layers(model, total_blocks_count, unfreeze_blocks_count):
+    for layer in model.layers:
+        layer_name = layer.name
+        if layer_name.startswith('block'):
+            block_number = int(layer_name.split('_')[0].replace('block', ''))
+            if unfreeze_blocks_count >= total_blocks_count - block_number + 1:
+                layer.trainable = True
+
+def perform_training(model, train_tfds, val_tfds, callbacks, epochs, batch_size):
+    start = time()
+    history = model.fit(
+        train_tfds,
+        batch_size=batch_size,
+        epochs=epochs,
+        validation_data=val_tfds,
+        callbacks=callbacks)
+
+    duration = time()-start
+    return duration, history
+    
+def print_results(duration, history, figs_dir):
+    print_log('\n------------------ Result ------------------')
+    print_log(f'Training took {print_time(duration)}')
+    print_log('history of metrics:')
+    for key, value in history.history.items():
+        print_log(f'\t{key}: {value}')
+        
+    losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, figs_dir)
+    print_log('Validation loss: %.2f' %val_losses[-1])
+    print_log('Validation Macro F1-score: %.2f' %val_macro_f1s[-1])
 
 def main(argv):
     if len(argv) > 1:
@@ -161,21 +200,10 @@ def main(argv):
     START_TIME = get_curr_datetime()
     OUTPUT_NAME = _OUTPUT_NAME.value + '_' + START_TIME
     
-    UNFREEZE_BLOCKS = _UNFREEZE_BLOCKS.value
+    TOTAL_CONV_BLOCKS = 5
+    MIN_UNFREEZE_BLOCKS = _MIN_UNFREEZE_BLOCKS.value
+    MAX_UNFREEZE_BLOCKS = min(_MAX_UNFREEZE_BLOCKS.value, TOTAL_CONV_BLOCKS)
     
-    #------------------- OUTPUT DIRECTORIES -------------------#
-    
-    board_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'board')
-    figs_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'figs')
-    export_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, 'model')
-    checkpoint_dir = os.path.join(export_dir, 'checkpoints', 'epoch-{epoch:02d}_validloss-{val_loss:.2f}.ckpt')
-    model_dir = os.path.join(export_dir, 'saved_model')
-    
-    os.makedirs(board_dir, exist_ok=True)
-    os.makedirs(figs_dir, exist_ok=True)
-    os.makedirs(export_dir, exist_ok=True)
-    os.makedirs(export_dir + '/checkpoints', exist_ok=True)
-    os.makedirs(export_dir + '/saved_model', exist_ok=True)
 
     #------------------- PRINT CONFIGURATION -------------------#
 
@@ -184,14 +212,14 @@ def main(argv):
     print_log('\n------------------ Configuration ------------------')
     print_log(f'Start: {START_TIME}')
     print_log(f'\nMode: {MODE}')
-    print_log(f'Unfreeze blocks: {UNFREEZE_BLOCKS}')
+    print_log(f'Unfreeze blocks: start {MIN_UNFREEZE_BLOCKS}, end {MAX_UNFREEZE_BLOCKS}')
     print_log(f'Continue from checkpoint: {False if LOAD_CHECKPOINT is None else LOAD_CHECKPOINT}')
     print_log(f'\nDataset: {DATASET}')
     print_log(f'Training Dataset Size: {TRAIN_SIZE}')
     print_log(f'Batch size: {BATCH_SIZE}')
     print_log(f'Image size: {IMAGE_SIZE}')
-    print_log(f'Epochs: {EPOCHS}')
-    print_log(f'Learning Rate: {LEARNING_RATE}')
+    print_log(f'Max Epochs per training round: {EPOCHS}')
+    print_log(f'Default Learning Rate: {LEARNING_RATE}')
     print_log(f'\nGPUs: {tf.config.list_physical_devices("GPU")}')
     print_log(f'CPUs: {tf.config.list_physical_devices("CPU")}')
 
@@ -221,7 +249,7 @@ def main(argv):
 
     elif DATASET == 'MIMIC-CXR':
         # max size: {'train': 360000, 'validate': 2900, 'test': 0}
-        data_loader = MIMIC_CXR_JPG_Loader({'train': TRAIN_SIZE, 'validate': 2900, 'test': 500}, PROJ_PATH)
+        data_loader = MIMIC_CXR_JPG_Loader({'train': TRAIN_SIZE, 'validate': 2900, 'test': 512}, PROJ_PATH)
         train_tfds, val_tfds, test_tfds = data_loader.load(['has_label', 'frontal_view', 'unambiguous_label'])
         num_classes = data_loader.info()['num_classes']
         
@@ -250,120 +278,149 @@ def main(argv):
         return x, y
 
     train_tfds = train_tfds.map(_preprocess_train, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-    batched_train_tfds = train_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    train_tfds = train_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
     val_tfds = val_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-    batched_val_tfds = val_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    val_tfds = val_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    test_tfds = test_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
 
-    for f, l in batched_train_tfds.take(1):
+    for f, l in train_tfds.take(1):
         print_log("Shape of image batch:", f.shape.as_list())
         print_log("Shape of labels batch:", l.shape.as_list())
 
-    #------------------- SETUP TRAINING -------------------#
-
-    # Define the Keras TensorBoard callback.
-    summary_writer = tf.summary.create_file_writer(board_dir)
-    tf.summary.trace_on(graph=True)
-
-    tensorboard_callback = keras.callbacks.TensorBoard(
-        log_dir=board_dir,
-        update_freq=20,   # log every 'update_freq' batch
-        profile_batch=(24,40))  # do the profiling for this range of batch
-    earlystopping_callback = keras.callbacks.EarlyStopping(
-        monitor='loss',
-        verbose=1,
-        patience=20)
-    checkpointer_callback = keras.callbacks.ModelCheckpoint(
-        filepath=checkpoint_dir,
-        save_weights_only=True,
-        monitor='val_loss',
-        verbose=1,
-        save_best_only=False)
     
     #------------------- CREATE MODEL -------------------#
     
-    model = create_vgg16(
-        input_shape=(*IMAGE_SIZE,CHANNELS),
-        num_classes=num_classes,
-        writer=summary_writer)
-    
-    # Unfreeze convolution blocks
-    if UNFREEZE_BLOCKS > 0:
-        total_blocks = 5
-        for layer in model.layers:
-            layer_name = layer.name
-            if layer_name.startswith('block'):
-                block_number = int(layer_name.split('_')[0].replace('block', ''))
-                if UNFREEZE_BLOCKS >= total_blocks - block_number + 1:
-                    layer.trainable = True
-    
-    bce = keras.losses.BinaryCrossentropy(from_logits=False)
-    auc = keras.metrics.AUC(
-        curve='ROC',
-        name='AUC',
-        multi_label=True,
-        num_labels=num_classes,
-        from_logits=False)
-
-    model.compile(
-        loss=bce,
-        optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
-        metrics=[macro_f1_score, soft_f1_loss, auc, global_accuracy, global_precision, global_recall])
-    
-    if LOAD_CHECKPOINT:
-        load_checkpoint_dir = os.path.join(PROJ_PATH,LOAD_CHECKPOINT)
-        latest = tf.train.latest_checkpoint(load_checkpoint_dir)
-        model.load_weights(latest)
-    
+    model = create_vgg16(input_shape=(*IMAGE_SIZE,CHANNELS), num_classes=num_classes)
     print(model.summary())
-    print("Total trainable weights: {}".format(len(model.trainable_weights)))
-    for weight in model.trainable_weights:
-        print(weight.name)
-
-    #------------------- PERFORM TRAINING -------------------#
-
+    
     if MODE != 'eval':
-        start = time()
-        history = model.fit(
-            batched_train_tfds,
-            batch_size=BATCH_SIZE,
-            epochs=EPOCHS,
-            validation_data=batched_val_tfds,
-            callbacks=[tensorboard_callback, earlystopping_callback, checkpointer_callback])
         
-        print('\nTraining took {}'.format(print_time(time()-start)))
+        is_first_round = True
+        last_checkpoint_dir = ''
+        tf.summary.trace_on(graph=True)
+        learning_rate_schedule = {
+            0: 1e-3,
+            1: 1e-5,
+            2: 1e-5,
+            3: 1e-6,
+            4: 1e-6,
+            5: 1e-6
+        }
         
-        print_log('history:')
-        for key, value in history.history.items():
-                print_log(f'{key}: {value}')
-        
-        losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, figs_dir)
-        print_log("Validation loss: %.2f" %val_losses[-1])
-        print_log("Validation Macro F1-score: %.2f" %val_macro_f1s[-1])
-        
-        # with summary_writer.as_default():
-        #     tf.summary.trace_export(name="model_trace", step=0, profiler_outdir=board_dir)
+        # Repeat training by gradually unfreezing conv blocks 
+        for num_unfrozen_blocks in range(MIN_UNFREEZE_BLOCKS, MAX_UNFREEZE_BLOCKS + 1):
+                
+            #------------------- OUTPUT DIRECTORIES -------------------#
+            
+            round_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, f'{num_unfrozen_blocks}_unfrozen_block')
+            board_dir = os.path.join(round_dir, 'board')
+            figs_dir = os.path.join(round_dir, 'figs')
+            export_dir = os.path.join(round_dir, 'model')
+            checkpoint_dir = os.path.join(export_dir, 'checkpoints')
+            model_dir = os.path.join(export_dir, 'saved_model')
+            
+            os.makedirs(board_dir, exist_ok=True)
+            os.makedirs(figs_dir, exist_ok=True)
+            os.makedirs(export_dir, exist_ok=True)
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            os.makedirs(model_dir, exist_ok=True)
+            
+            
+            #------------------- SETUP TRAINING -------------------#
 
+            summary_writer = tf.summary.create_file_writer(board_dir)
+            model.set_writer(summary_writer)
 
-    #------------------- RESULTS -------------------#
+            tensorboard_callback = keras.callbacks.TensorBoard(
+                log_dir=board_dir,
+                update_freq=20,   # log metrics every this many batches
+                profile_batch=(24,40))  # do the profiling for this range of batch
+            earlystopping_callback = keras.callbacks.EarlyStopping(
+                monitor='val_loss',
+                mode='min',
+                verbose=1,
+                min_delta=0.001,   # how much change is considered an improvement
+                patience=2,
+                start_from_epoch=0)
+            checkpointer_callback = keras.callbacks.ModelCheckpoint(
+                filepath=os.path.join(checkpoint_dir, 'epoch-{epoch:02d}_validloss-{val_loss:.4f}.ckpt'),
+                save_weights_only=True,
+                monitor='val_loss',
+                verbose=1,
+                save_best_only=False)
+            callbacks = [tensorboard_callback, earlystopping_callback, checkpointer_callback]
+            
+            learning_rate = learning_rate_schedule.get(num_unfrozen_blocks, LEARNING_RATE)
+            optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+            bce = keras.losses.BinaryCrossentropy(from_logits=False)
+            auc = keras.metrics.AUC(
+                curve='ROC',
+                name='AUC',
+                multi_label=True,
+                num_labels=num_classes,
+                from_logits=False)
+            metrics = [macro_f1_score, soft_f1_loss, auc, global_accuracy, global_precision, global_recall]
+            
+            
+            #------------------- PERFORM TRAINING -------------------#
+            
+            print_log('\n------------------ Training ------------------')
+            # Unfreeze blocks (if needed)
+            if num_unfrozen_blocks > 0:
+                unfreeze_layers(model, TOTAL_CONV_BLOCKS, num_unfrozen_blocks)
+            print_log(f'Training with {num_unfrozen_blocks} unfrozen blocks...')
+            print_log(f'Learning rate = {learning_rate}')
+            print_log(f'Total trainable weights: {len(model.trainable_weights)}')
+            for weight in model.trainable_weights:
+                print_log(f'\t{weight.name}')
+            
+            # (Re)compile model
+            # NOTE: compiling will reset weights to random
+            model.compile(loss=bce, optimizer=optimizer, metrics=metrics)
+            
+            # Load weights
+            if is_first_round:
+                if LOAD_CHECKPOINT:
+                    load_checkpoint_dir = os.path.join(PROJ_PATH, LOAD_CHECKPOINT)
+                    latest = tf.train.latest_checkpoint(load_checkpoint_dir)
+                    model.load_weights(latest)
+            else:
+                # Reload the latest weights from previous raound
+                latest = tf.train.latest_checkpoint(last_checkpoint_dir)
+                model.load_weights(latest)
+            
+            # Train with newly unfrozen blocks
+            duration, history = perform_training(model, train_tfds, val_tfds, callbacks, EPOCHS, BATCH_SIZE)
+            print_results(duration, history, figs_dir)
+                        
+        
+            #------------------- SAVE MODEL -------------------#
+        
+            model.save(model_dir, save_format='tf')
+            print_log(f'Saved model to: "{model_dir}"')
+            
+            # with summary_writer.as_default():
+            #     tf.summary.trace_export(name="model_trace", step=0, profiler_outdir=board_dir)
+            
+            
+            is_first_round = False
+            last_checkpoint_dir = checkpoint_dir
+
     
-    test_tfds = test_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-    batched_test_tfds = test_tfds.shuffle(buffer_size=10*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    #------------------- EVALUATE -------------------#
     
-    for batch in batched_test_tfds:
-        show_prediction(*batch, model, figs_dir)
-        break
+    del train_tfds
+    del val_tfds
+    test_tfds = test_tfds.shuffle(buffer_size=10*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    
+    eval_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME)
+    for f, l in test_tfds.take(1):
+        show_prediction(f, l, model, eval_dir)
     
     log_eval_metrics(
-        dataset=batched_test_tfds,
+        dataset=test_tfds,
         model=model,
         metrics=[bce, auc, macro_f1_score, soft_f1_loss, global_accuracy, global_precision, global_recall])
-    
-  
-    #------------------- SAVE MODEL -------------------#
-    
-    if MODE != 'eval':
-        model.save(model_dir, save_format='tf')
-        print_log(f"Model was exported to this path: '{model_dir}'")
     
     print_log('\nDONE!')
 

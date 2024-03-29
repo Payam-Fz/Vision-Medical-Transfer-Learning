@@ -21,7 +21,8 @@ chexpert_csv_file = 'mimic-cxr-2.0.0-chexpert.csv.gz'
 
 # ONLY COMMON
 CLASS_NAMES = np.array(['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema',
-                'Pleural Effusion', 'Pneumonia', 'Pneumothorax']) #, 'No Finding'
+                'Pleural Effusion', 'Pneumonia', 'Pneumothorax',
+                'Fracture', 'Support Devices']) # These ones re-added on March 27
 
 class MIMIC_CXR_JPG_Loader:
 
