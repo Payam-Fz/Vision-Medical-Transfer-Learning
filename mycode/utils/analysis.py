@@ -204,6 +204,6 @@ def log_eval_metrics(dataset, model, metrics):
     
     avg_metrics = {name: value / tf.cast(num_batches, tf.float32) for name, value in metric_sum.items()}
     
-    print_log(f'Result of testing on {num_batches} batches:')
+    print_log(f'Result of testing on {num_batches.numpy()} batches:')
     for name, value in avg_metrics.items():
         print_log(f'\t{name}: {value.numpy()}')

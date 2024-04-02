@@ -167,16 +167,15 @@ def perform_training(model, train_tfds, val_tfds, callbacks, epochs, batch_size)
     duration = time()-start
     return duration, history
     
-def print_results(duration, history, figs_dir):
-    print_log('\n------------------ Result ------------------')
+def log_training_progress(duration, history, figs_dir):
     print_log(f'Training took {print_time(duration)}')
     print_log('history of metrics:')
     for key, value in history.history.items():
         print_log(f'\t{key}: {value}')
         
     losses, val_losses, macro_f1s, val_macro_f1s = learning_curves(history, figs_dir)
-    print_log('Validation loss: %.2f' %val_losses[-1])
-    print_log('Validation Macro F1-score: %.2f' %val_macro_f1s[-1])
+    print_log('Validation loss: %.4f' %val_losses[-1])
+    print_log('Validation Macro F1-score: %.4f' %val_macro_f1s[-1])
 
 def main(argv):
     if len(argv) > 1:
@@ -186,8 +185,10 @@ def main(argv):
     
     LOAD_CHECKPOINT = _LOAD_CHECKPOINT.value
     MODE = _MODE.value
+    assert MODE in ["train_then_eval", "eval"], 'Invalid Mode argument'
     
-    DATASET = _DATASET.value #@param ["Chexpert", "Camelyon", "MIMIC-CXR", "Noise"]
+    DATASET = _DATASET.value
+    assert DATASET in ["Chexpert", "MIMIC-CXR", "Noise"], 'Invalid Dataset argument'
     BATCH_SIZE = _BATCH_SIZE.value
     TRAIN_SIZE = _TRAIN_SIZE.value
     IMAGE_SIZE = (_IMAGE_SIZE.value, _IMAGE_SIZE.value)
@@ -203,12 +204,20 @@ def main(argv):
     TOTAL_CONV_BLOCKS = 5
     MIN_UNFREEZE_BLOCKS = _MIN_UNFREEZE_BLOCKS.value
     MAX_UNFREEZE_BLOCKS = min(_MAX_UNFREEZE_BLOCKS.value, TOTAL_CONV_BLOCKS)
+    assert MIN_UNFREEZE_BLOCKS <= MAX_UNFREEZE_BLOCKS, 'Invalid Min and Max Unfrozen blocks specified'
+    
+    learning_rate_schedule = {
+        0: 1e-3,
+        1: 1e-5,
+        2: 1e-5,
+        3: 1e-6,
+        4: 1e-6,
+        5: 1e-6
+    }
     
 
     #------------------- PRINT CONFIGURATION -------------------#
 
-    print_log(f'Code version: {2}')
-    print_log('subclassed + bce loss + large batch')
     print_log('\n------------------ Configuration ------------------')
     print_log(f'Start: {START_TIME}')
     print_log(f'\nMode: {MODE}')
@@ -224,6 +233,7 @@ def main(argv):
     print_log(f'CPUs: {tf.config.list_physical_devices("CPU")}')
 
     #------------------- LOAD DATA -------------------#
+    print_log('\n------------------ Data ------------------')
     
     # Chexpert: TFDS.has Supervised - produces binary labels the way we were using them
     #           Chexpert data loader fails unless you have it downloaded - download & put in this directory
@@ -253,7 +263,6 @@ def main(argv):
         train_tfds, val_tfds, test_tfds = data_loader.load(['has_label', 'frontal_view', 'unambiguous_label'])
         num_classes = data_loader.info()['num_classes']
         
-        print_log('\n------------------ Data ------------------')
         for key, value in data_loader.info().items():
             print_log(f'{key}: {value}')
 
@@ -293,106 +302,112 @@ def main(argv):
     model = create_vgg16(input_shape=(*IMAGE_SIZE,CHANNELS), num_classes=num_classes)
     print(model.summary())
     
-    if MODE != 'eval':
+    is_first_round = True
+    last_checkpoint_dir = ''
+    tf.summary.trace_on(graph=True)
+    main_out_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME)
+    os.makedirs(main_out_dir, exist_ok=True)
+    
+    if MODE == 'eval':
+        round_range = range(1)
+    else:
+         round_range = range(MIN_UNFREEZE_BLOCKS, MAX_UNFREEZE_BLOCKS + 1)
+    
+    # This loop will always happen at least once
+    for num_unfrozen_blocks in round_range:
+        print_log('\n------------------ Setup Round ------------------')
         
-        is_first_round = True
-        last_checkpoint_dir = ''
-        tf.summary.trace_on(graph=True)
-        learning_rate_schedule = {
-            0: 1e-3,
-            1: 1e-5,
-            2: 1e-5,
-            3: 1e-6,
-            4: 1e-6,
-            5: 1e-6
-        }
+        #------------------- OUTPUT DIRECTORIES -------------------#
         
-        # Repeat training by gradually unfreezing conv blocks 
-        for num_unfrozen_blocks in range(MIN_UNFREEZE_BLOCKS, MAX_UNFREEZE_BLOCKS + 1):
-                
-            #------------------- OUTPUT DIRECTORIES -------------------#
-            
-            round_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME, f'{num_unfrozen_blocks}_unfrozen_block')
-            board_dir = os.path.join(round_dir, 'board')
-            figs_dir = os.path.join(round_dir, 'figs')
-            export_dir = os.path.join(round_dir, 'model')
-            checkpoint_dir = os.path.join(export_dir, 'checkpoints')
-            model_dir = os.path.join(export_dir, 'saved_model')
-            
-            os.makedirs(board_dir, exist_ok=True)
-            os.makedirs(figs_dir, exist_ok=True)
-            os.makedirs(export_dir, exist_ok=True)
-            os.makedirs(checkpoint_dir, exist_ok=True)
-            os.makedirs(model_dir, exist_ok=True)
-            
-            
-            #------------------- SETUP TRAINING -------------------#
+        round_dir = os.path.join(main_out_dir, f'{num_unfrozen_blocks}_unfrozen_block')
+        board_dir = os.path.join(round_dir, 'board')
+        figs_dir = os.path.join(round_dir, 'figs')
+        export_dir = os.path.join(round_dir, 'model')
+        checkpoint_dir = os.path.join(export_dir, 'checkpoints')
+        model_dir = os.path.join(export_dir, 'saved_model')
+        
+        os.makedirs(board_dir, exist_ok=True)
+        os.makedirs(figs_dir, exist_ok=True)
+        os.makedirs(export_dir, exist_ok=True)
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        os.makedirs(model_dir, exist_ok=True)
+        
+        
+        #------------------- SETUP METRICS AND DRIVERS -------------------#
 
-            summary_writer = tf.summary.create_file_writer(board_dir)
-            model.set_writer(summary_writer)
+        summary_writer = tf.summary.create_file_writer(board_dir)
+        model.set_writer(summary_writer)
 
-            tensorboard_callback = keras.callbacks.TensorBoard(
-                log_dir=board_dir,
-                update_freq=20,   # log metrics every this many batches
-                profile_batch=(24,40))  # do the profiling for this range of batch
-            earlystopping_callback = keras.callbacks.EarlyStopping(
-                monitor='val_loss',
-                mode='min',
-                verbose=1,
-                min_delta=0.001,   # how much change is considered an improvement
-                patience=2,
-                start_from_epoch=0)
-            checkpointer_callback = keras.callbacks.ModelCheckpoint(
-                filepath=os.path.join(checkpoint_dir, 'epoch-{epoch:02d}_validloss-{val_loss:.4f}.ckpt'),
-                save_weights_only=True,
-                monitor='val_loss',
-                verbose=1,
-                save_best_only=False)
-            callbacks = [tensorboard_callback, earlystopping_callback, checkpointer_callback]
-            
-            learning_rate = learning_rate_schedule.get(num_unfrozen_blocks, LEARNING_RATE)
-            optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
-            bce = keras.losses.BinaryCrossentropy(from_logits=False)
-            auc = keras.metrics.AUC(
-                curve='ROC',
-                name='AUC',
-                multi_label=True,
-                num_labels=num_classes,
-                from_logits=False)
-            metrics = [macro_f1_score, soft_f1_loss, auc, global_accuracy, global_precision, global_recall]
-            
+        tensorboard_callback = keras.callbacks.TensorBoard(
+            log_dir=board_dir,
+            update_freq=20,   # log metrics every this many batches
+            profile_batch=(24,40))  # do the profiling for this range of batch
+        earlystopping_callback = keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            mode='min',
+            verbose=1,
+            min_delta=0.001,   # how much change is considered an improvement
+            patience=2,
+            start_from_epoch=0)
+        checkpointer_callback = keras.callbacks.ModelCheckpoint(
+            filepath=os.path.join(checkpoint_dir, 'epoch-{epoch:02d}_valloss-{val_loss:.4f}.ckpt'),
+            save_weights_only=True,
+            monitor='val_loss',
+            verbose=1,
+            save_best_only=True) # so that the next round loads the best weights
+        callbacks = [tensorboard_callback, earlystopping_callback, checkpointer_callback]
+        
+        learning_rate = learning_rate_schedule.get(num_unfrozen_blocks, LEARNING_RATE)
+        optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+        bce = keras.losses.BinaryCrossentropy(from_logits=False)
+        auc = keras.metrics.AUC(
+            curve='ROC',
+            name='AUC',
+            multi_label=True,
+            num_labels=num_classes,
+            from_logits=False)
+        metrics = [macro_f1_score, soft_f1_loss, auc, global_accuracy, global_precision, global_recall]
+        
+        
+        #------------------- MODIFY MODEL -------------------#
+        
+        if MODE != 'eval':
+            # Unfreeze blocks (if needed)
+            if num_unfrozen_blocks > 0:
+                unfreeze_layers(model, TOTAL_CONV_BLOCKS, num_unfrozen_blocks)
+            print_log(f'Unfreezing {num_unfrozen_blocks} blocks...')
+            print_log(f'Total trainable weights: {len(model.trainable_weights)}')
+            for weight in model.trainable_weights:
+                print_log(f'\t{weight.name}')
+            print_log(f'Learning rate = {learning_rate}')
+        
+        # (Re)compile model
+        # NOTE: compiling will reset weights to random
+        model.compile(loss=bce, optimizer=optimizer, metrics=metrics)
+        
+        # Load weights
+        if is_first_round:
+            if LOAD_CHECKPOINT:
+                load_checkpoint_dir = os.path.join(PROJ_PATH, LOAD_CHECKPOINT)
+                latest = tf.train.latest_checkpoint(load_checkpoint_dir)
+                model.load_weights(latest)
+                print_log(f'Loading weights from {latest}')
+        else:
+            # Reload the latest weights from previous raound
+            latest = tf.train.latest_checkpoint(last_checkpoint_dir)
+            model.load_weights(latest)
+            print_log(f'Loading weights from {latest}')
+        
+        if MODE != 'eval':
             
             #------------------- PERFORM TRAINING -------------------#
             
             print_log('\n------------------ Training ------------------')
-            # Unfreeze blocks (if needed)
-            if num_unfrozen_blocks > 0:
-                unfreeze_layers(model, TOTAL_CONV_BLOCKS, num_unfrozen_blocks)
-            print_log(f'Training with {num_unfrozen_blocks} unfrozen blocks...')
-            print_log(f'Learning rate = {learning_rate}')
-            print_log(f'Total trainable weights: {len(model.trainable_weights)}')
-            for weight in model.trainable_weights:
-                print_log(f'\t{weight.name}')
-            
-            # (Re)compile model
-            # NOTE: compiling will reset weights to random
-            model.compile(loss=bce, optimizer=optimizer, metrics=metrics)
-            
-            # Load weights
-            if is_first_round:
-                if LOAD_CHECKPOINT:
-                    load_checkpoint_dir = os.path.join(PROJ_PATH, LOAD_CHECKPOINT)
-                    latest = tf.train.latest_checkpoint(load_checkpoint_dir)
-                    model.load_weights(latest)
-            else:
-                # Reload the latest weights from previous raound
-                latest = tf.train.latest_checkpoint(last_checkpoint_dir)
-                model.load_weights(latest)
-            
             # Train with newly unfrozen blocks
             duration, history = perform_training(model, train_tfds, val_tfds, callbacks, EPOCHS, BATCH_SIZE)
-            print_results(duration, history, figs_dir)
-                        
+            print_log('\n------------------ Training Round Summary ------------------')
+            log_training_progress(duration, history, figs_dir)
+            
         
             #------------------- SAVE MODEL -------------------#
         
@@ -401,22 +416,23 @@ def main(argv):
             
             # with summary_writer.as_default():
             #     tf.summary.trace_export(name="model_trace", step=0, profiler_outdir=board_dir)
-            
-            
-            is_first_round = False
-            last_checkpoint_dir = checkpoint_dir
+        
+        
+        is_first_round = False
+        last_checkpoint_dir = checkpoint_dir
 
     
     #------------------- EVALUATE -------------------#
+    
+    print_log('\n------------------ Evaluate ------------------')
     
     del train_tfds
     del val_tfds
     test_tfds = test_tfds.shuffle(buffer_size=10*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
     
-    eval_dir = os.path.join(PROJ_PATH, 'out', OUTPUT_NAME)
     for f, l in test_tfds.take(1):
-        show_prediction(f, l, model, eval_dir)
-    
+        show_prediction(f, l, model, main_out_dir)
+
     log_eval_metrics(
         dataset=test_tfds,
         model=model,
