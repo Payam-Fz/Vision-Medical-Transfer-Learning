@@ -106,8 +106,8 @@ if gpus:
 
 class BaseModel(keras.models.Sequential):
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.writer = None
         
     def set_writer(self, writer):
@@ -136,11 +136,13 @@ def create_vgg16(input_shape, num_classes):
     base_vgg = VGG16(weights='imagenet', include_top=False, input_shape=input_shape)
     base_vgg.trainable = False
 
-    model = BaseModel()
+    model = BaseModel(name='my_vgg16')
     model.add(layers.Input(shape=input_shape, name='my_input'))
     for layer in base_vgg.layers:
         model.add(layer)
-    model.add(layers.Flatten(name='my_flatten'))
+    # model.add(layers.Flatten(name='my_flatten'))
+    model.add(layers.GlobalAveragePooling2D(name='my_avg_pool'))
+    # model.add(layers.GlobalMaxPooling2D(name='my_max_pool'))
     model.add(layers.Dense(256, activation='relu', name='my_fc_1'))
     model.add(layers.Dense(128, activation='relu', name='my_fc_2'))
     model.add(layers.Dense(num_classes, activation='sigmoid', name='my_output'))
@@ -207,7 +209,7 @@ def main(argv):
     assert MIN_UNFREEZE_BLOCKS <= MAX_UNFREEZE_BLOCKS, 'Invalid Min and Max Unfrozen blocks specified'
     
     learning_rate_schedule = {
-        0: 1e-3,
+        0: 1e-4,
         1: 1e-5,
         2: 1e-5,
         3: 1e-6,
@@ -274,6 +276,8 @@ def main(argv):
     def _preprocess_train(x, y, info=None):
         x = preprocess_image(x, *IMAGE_SIZE,
             is_training=True, color_distort=False, crop='Center')
+        x = tf.image.convert_image_dtype(x, dtype=tf.uint8)
+        x = tf.keras.applications.vgg16.preprocess_input(x)
         x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
         y = tf.ensure_shape(y, [num_classes])
         return x, y
@@ -282,6 +286,8 @@ def main(argv):
     def _preprocess_val(x, y, info=None):
         x = preprocess_image(x, *IMAGE_SIZE,
             is_training=False, color_distort=False, crop='Center')
+        x = tf.image.convert_image_dtype(x, dtype=tf.uint8)
+        x = tf.keras.applications.vgg16.preprocess_input(x)
         x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
         y = tf.ensure_shape(y, [num_classes])
         return x, y
@@ -293,6 +299,8 @@ def main(argv):
     test_tfds = test_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
 
     for f, l in train_tfds.take(1):
+        print_log('max value after preprocess',tf.reduce_max(f))
+        print_log('min value after preprocess',tf.reduce_min(f))
         print_log("Shape of image batch:", f.shape.as_list())
         print_log("Shape of labels batch:", l.shape.as_list())
 
@@ -346,8 +354,8 @@ def main(argv):
             monitor='val_loss',
             mode='min',
             verbose=1,
-            min_delta=0.001,   # how much change is considered an improvement
-            patience=2,
+            # min_delta=0.001,   # how much change is considered an improvement
+            patience=4,
             start_from_epoch=0)
         checkpointer_callback = keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(checkpoint_dir, 'epoch-{epoch:02d}_valloss-{val_loss:.4f}.ckpt'),

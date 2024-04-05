@@ -51,7 +51,7 @@ class MIMIC_CXR_JPG_Loader:
         grouped_folder = tf.strings.substr( subject_id_str, 0, 3, unit='BYTE', name=None )
         image_path = self.project_dir + os.sep + data_folder + os.sep + grouped_folder + os.sep + subject_id_str + os.sep + study_id_str + os.sep + dicom_id + ".jpg"
         image = tf.io.read_file(image_path)
-        image = tf.image.decode_image(image, channels=3, dtype=tf.float32)
+        image = tf.image.decode_image(image, channels=3, dtype=tf.float32)  # This normalizes image to [0.0-1.0] in RGB
         return image
 
     # converts a row of labels in string to integers based on the map

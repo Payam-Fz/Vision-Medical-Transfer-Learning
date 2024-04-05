@@ -1,9 +1,9 @@
 #!/bin/bash
 # a file for job output, you can check job progress
-#SBATCH --output=../out/job_logs/vgg16-gradual-best-epoch_%j.out
+#SBATCH --output=../out/job_logs/vgg16-gradual-1-4_%j.out
 
 # a file for errors
-#SBATCH --error=../out/job_logs/vgg16-gradual-best-epoch_%j.err
+#SBATCH --error=../out/job_logs/vgg16-gradual-1-4_%j.err
 
 # select the node edith
 #SBATCH --partition=edith
@@ -24,7 +24,7 @@
 # CPU allocated
 #SBATCH --cpus-per-task=6
 
-#SBATCH --job-name=med-ssl
+#SBATCH --job-name=vgg
 #SBATCH --time=6-00:10:00
 
 #----------------------------------------------------------
@@ -65,7 +65,7 @@ export XLA_FLAGS=--xla_gpu_cuda_data_dir=$PROJPATH/mycode
 
 # ---------- FULL TRAIN ----------- #
 python $PROJPATH/mycode/neural_nets/vgg16.py \
-    --ouput_name=vgg16-gradual-best-epoch-cont \
-    --learning_rate=1e-5 --image_size=448 --epochs=30 --batch_size=64 --train_size=65536 \
+    --ouput_name=vgg16-gradual-1-4 \
+    --learning_rate=1e-5 --image_size=224 --epochs=30 --batch_size=64 --train_size=65536 \
     --mode=train_then_eval --min_unfreeze_blocks=1 --max_unfreeze_blocks=4 \
-    --load_checkpoint=./out/vgg16-gradual-best-epoch_2024-03-29_1434/0_unfrozen_block/model/checkpoints
+    --load_checkpoint=./out/vgg16-gradual-fix-color_2024-04-03_0941/0_unfrozen_block/model/checkpoints
