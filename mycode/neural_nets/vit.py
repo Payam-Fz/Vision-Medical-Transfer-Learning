@@ -30,13 +30,16 @@ from absl import flags
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-from tensorflow.keras.applications import ResNet50
+import tensorflow_hub as hub
 
 from utils.augmentation import preprocess_image
 from utils.log import get_curr_datetime, print_time, print_log
 from utils.analysis import learning_curves, show_prediction, log_eval_metrics
 from loader.mimic_cxr_jpg_loader import MIMIC_CXR_JPG_Loader
 from utils.objective_func import soft_f1_loss, macro_f1_score, macro_bce, global_accuracy, global_precision, global_recall
+# from neural_nets.components.patch_encoder import PatchEncoder
+# from neural_nets.components.patch_creation import Patches
+from loader.vit_loader import load_model
 
 #------------------- PARAMS -------------------#
 
@@ -129,36 +132,51 @@ class BaseModel(keras.Model):
         
         return self.compute_metrics(x, y, y_pred, None)
 
-def create_resnet50(input_shape, num_classes):
-    base_resnet = ResNet50(weights='imagenet', include_top=False, input_shape=input_shape)
-    base_resnet.trainable = False
-    
-    x = layers.GlobalMaxPooling2D(name='my_avg_pool')(base_resnet.output)
-    # x = layers.Flatten(name='my_flatten')(base_resnet.output)
-    x = layers.Dense(256, activation='relu', name='my_fc_1')(x)
+def mlp(x, hidden_units, dropout_rate):
+    for units in hidden_units:
+        x = layers.Dense(units, activation=keras.activations.relu)(x)
+        x = layers.Dropout(dropout_rate)(x)
+    return x
+
+def transformer_block(encoded_patches, projection_dim, num_heads, mlp_units):
+    # Layer normalization 1.
+    x1 = layers.LayerNormalization(epsilon=1e-6)(encoded_patches)
+    # Create a multi-head attention layer.
+    attention_output = layers.MultiHeadAttention(
+        num_heads=num_heads, key_dim=projection_dim, dropout=0.1
+    )(x1, x1)
+    # Skip connection 1.
+    x2 = layers.Add()([attention_output, encoded_patches])
+    # Layer normalization 2.
+    x3 = layers.LayerNormalization(epsilon=1e-6)(x2)
+    # MLP.
+    x3 = mlp(x3, hidden_units=mlp_units, dropout_rate=0.1)
+    # Skip connection 2.
+    out = layers.Add()([x3, x2])
+    return out
+
+def create_vit(input_shape, num_classes):
+    base_vit = hub.KerasLayer(
+        "https://www.kaggle.com/models/spsayakpaul/vision-transformer/TensorFlow2/vit-b16-fe/1",
+        trainable=True,
+    )
+    # base_vit.trainable = False
+
+    inputs = keras.Input(input_shape, name='my_input')
+    base_output = base_vit(inputs)
+    x = layers.Dense(256, activation='relu', name='my_fc_1')(base_output)
     x = layers.Dense(128, activation='relu', name='my_fc_2')(x)
     x = layers.Dense(num_classes, activation='sigmoid', name='my_output')(x)
-    model = BaseModel(inputs=base_resnet.input, outputs=x, name='my_resnet50')
+    model = BaseModel(inputs=inputs, outputs=x, name='my_vit')
     
     return model
 
-def unfreeze_layers(model, total_blocks_count, unfreeze_blocks_count):
-    # resnet = model.layers[1]
-    # assert 'resnet' in resnet.name.lower(), 'Probably not the proper resnet layer'
-    # for layer in resnet.layers:
-    #     layer_name = layer.name
-    #     print('layer_name',layer_name)
-    #     if layer_name.startswith('conv'):
-    #         block_number = int(layer_name.split('_')[0].replace('conv', ''))
-    #         print('block number',block_number)
-    #         if unfreeze_blocks_count >= total_blocks_count - block_number + 1:
-    #             layer.trainable = True
-    for layer in model.layers:
-        layer_name = layer.name
-        if layer_name.startswith('conv'):
-            block_number = int(layer_name.split('_')[0].replace('conv', ''))
-            if unfreeze_blocks_count >= total_blocks_count - block_number + 1:
-                layer.trainable = True
+def unfreeze_layers(model, unfreeze_blocks_count):
+    # For ViT, unfreeze the whole model
+    # if (unfreeze_blocks_count > 0):
+    #     for layer in model.layers:
+    #         layer.trainable = True
+    return
 
 def perform_training(model, train_tfds, val_tfds, callbacks, epochs, batch_size):
     start = time()
@@ -166,11 +184,13 @@ def perform_training(model, train_tfds, val_tfds, callbacks, epochs, batch_size)
         train_tfds,
         batch_size=batch_size,
         epochs=epochs,
-        validation_data=train_tfds,
+        validation_data=val_tfds,
         callbacks=callbacks)
 
     duration = time()-start
     return duration, history
+
+
     
 def log_training_progress(duration, history, figs_dir):
     print_log(f'Training took {print_time(duration)}')
@@ -198,7 +218,6 @@ def main(argv):
     TRAIN_SIZE = _TRAIN_SIZE.value
     IMAGE_SIZE = (_IMAGE_SIZE.value, _IMAGE_SIZE.value)
     LEARNING_RATE = _LEARNING_RATE.value
-    MOMENTUM = _MOMENTUM.value
     EPOCHS = _EPOCHS.value
     WEIGHT_DECAY = _WEIGHT_DECAY.value
     CHANNELS = 3
@@ -207,19 +226,22 @@ def main(argv):
     START_TIME = get_curr_datetime()
     OUTPUT_NAME = _OUTPUT_NAME.value + '_' + START_TIME
     
-    TOTAL_CONV_BLOCKS = 5
+    TOTAL_CONV_BLOCKS = 1
     MIN_UNFREEZE_BLOCKS = _MIN_UNFREEZE_BLOCKS.value
     MAX_UNFREEZE_BLOCKS = min(_MAX_UNFREEZE_BLOCKS.value, TOTAL_CONV_BLOCKS)
     assert MIN_UNFREEZE_BLOCKS <= MAX_UNFREEZE_BLOCKS, 'Invalid Min and Max Unfrozen blocks specified'
     
+    ES_PATIENCE = 3
     learning_rate_schedule = {
-        0: 1e-3,
-        1: 1e-5,
-        2: 1e-5,
-        3: 1e-6,
-        4: 1e-6,
-        5: 1e-6
+        0: 1e-4,
+        1: 1e-6
     }
+
+    # ----------- Model Configs -----------
+    assert IMAGE_SIZE == (224, 224), "Wrong image size for this model"
+    PATCH_SIZE = 16 # Results in 14 x 14 patches
+    model_path = 'base-models/ViT/vit_b16_patch16_224-i1k_pretrained.zip'
+
     
 
     #------------------- PRINT CONFIGURATION -------------------#
@@ -234,7 +256,8 @@ def main(argv):
     print_log(f'Batch size: {BATCH_SIZE}')
     print_log(f'Image size: {IMAGE_SIZE}')
     print_log(f'Max Epochs per training round: {EPOCHS}')
-    print_log(f'Default Learning Rate: {LEARNING_RATE}')
+    print_log(f'Learning Rate: {learning_rate_schedule}')
+    print_log(f'Early Stopping Patience: {ES_PATIENCE}')
     print_log(f'\nGPUs: {tf.config.list_physical_devices("GPU")}')
     print_log(f'CPUs: {tf.config.list_physical_devices("CPU")}')
 
@@ -276,49 +299,73 @@ def main(argv):
         raise Exception('The Data Type specified does not have data loading defined.')
 
 
-    # @tf.function
-    # def _preprocess_train(x, y, info=None):
-    #     x = preprocess_image(x, *IMAGE_SIZE,
-    #         is_training=True, color_distort=False, crop='Center')
-    #     x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
-    #     y = tf.ensure_shape(y, [num_classes])
-    #     return x, y
+    # crop_layer = keras.layers.CenterCrop(*IMAGE_SIZE)
+    # norm_layer = keras.layers.Normalization(
+    #     mean=[0.485 * 255, 0.456 * 255, 0.406 * 255],
+    #     variance=[(0.229 * 255) ** 2, (0.224 * 255) ** 2, (0.225 * 255) ** 2],
+    # )
+    # rescale_layer = keras.layers.Rescaling(scale=1.0 / 127.5, offset=-1)
+
+
+    # def preprocess_vit_image(image, model_type, size=IMAGE_SIZE[0]):
+    #     # Turn the image into a numpy array and add batch dim.
+    #     image = np.array(image)
+    #     image = ops.expand_dims(image, 0)
+
+    #     # If model type is vit rescale the image to [-1, 1].
+    #     if model_type == "original_vit":
+    #         image = rescale_layer(image)
+
+    #     # Resize the image using bicubic interpolation.
+    #     resize_size = int((256 / 224) * size)
+    #     image = ops.image.resize(image, (resize_size, resize_size), interpolation="bicubic")
+
+    #     # Crop the image.
+    #     image = crop_layer(image)
+
+    #     # If model type is DeiT or DINO normalize the image.
+    #     if model_type != "original_vit":
+    #         image = norm_layer(image)
+
+    #     return ops.convert_to_numpy(image)
 
     @tf.function
-    def _preprocess_val(x, y, info=None):
-        x = preprocess_image(x, *IMAGE_SIZE, is_training=True, v2)
+    def _preprocess_train(x, y, info=None):
+        x = preprocess_image(x, *IMAGE_SIZE, is_training=True, probability=0.4, v2=False)
         x = tf.image.convert_image_dtype(x, dtype=tf.uint8)
-        x = tf.keras.applications.resnet50.preprocess_input(x)
+        x = tf.keras.applications.imagenet_utils.preprocess_input(x)
+        x = tf.image.convert_image_dtype(x, dtype=tf.float32)
+        x = tf.subtract(tf.multiply(x, 2.0), 1.0)
         x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
         y = tf.ensure_shape(y, [num_classes])
         return x, y
 
-    
-    for f, l, info in train_tfds.take(1):
-        print_log('max value before preprocess',tf.reduce_max(f))
-        print_log('min value before preprocess',tf.reduce_min(f))
-        print_log("Shape of image batch:", f.shape.as_list())
-        print_log("Shape of labels batch:", l.shape.as_list())
-        
-    train_tfds = train_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    @tf.function
+    def _preprocess_val(x, y, info=None):
+        x = preprocess_image(x, *IMAGE_SIZE, is_training=False)
+        x = tf.image.convert_image_dtype(x, dtype=tf.uint8)
+        x = tf.keras.applications.imagenet_utils.preprocess_input(x)
+        x = tf.image.convert_image_dtype(x, dtype=tf.float32)
+        x = tf.subtract(tf.multiply(x, 2.0), 1.0)
+        x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
+        y = tf.ensure_shape(y, [num_classes])
+        return x, y
+
+    train_tfds = train_tfds.map(_preprocess_train, num_parallel_calls=tf.data.experimental.AUTOTUNE)
     train_tfds = train_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
-    # val_tfds = val_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-    # val_tfds = val_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
-    # test_tfds = test_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    val_tfds = val_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    val_tfds = val_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    test_tfds = test_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
 
     for f, l in train_tfds.take(1):
-        print_log('max value after preprocess',tf.reduce_max(f))
-        print_log('min value after preprocess',tf.reduce_min(f))
         print_log("Shape of image batch:", f.shape.as_list())
         print_log("Shape of labels batch:", l.shape.as_list())
 
     
     #------------------- CREATE MODEL -------------------#
     
-    model = create_resnet50(input_shape=(*IMAGE_SIZE,CHANNELS), num_classes=num_classes)
+    model = create_vit((*IMAGE_SIZE,CHANNELS), num_classes)
     print(model.summary())
-    # for weight in model.weights:
-    #     print_log(f'\t{weight.name}')
     
     is_first_round = True
     last_checkpoint_dir = ''
@@ -359,13 +406,13 @@ def main(argv):
         tensorboard_callback = keras.callbacks.TensorBoard(
             log_dir=board_dir,
             update_freq=20,   # log metrics every this many batches
-            )  # do the profiling for this range of batch
+            profile_batch=(24,40))  # do the profiling for this range of batch
         earlystopping_callback = keras.callbacks.EarlyStopping(
             monitor='val_loss',
             mode='min',
             verbose=1,
-            min_delta=0.001,   # how much change is considered an improvement
-            patience=2,
+            # min_delta=0.001,   # how much change is considered an improvement
+            patience=ES_PATIENCE,
             start_from_epoch=0)
         checkpointer_callback = keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(checkpoint_dir, 'epoch-{epoch:02d}_valloss-{val_loss:.4f}.ckpt'),
@@ -373,19 +420,10 @@ def main(argv):
             monitor='val_loss',
             verbose=1,
             save_best_only=True) # so that the next round loads the best weights
-        def lr_schedule(epoch, lr):
-            decay_rate = 0.85
-            decay_step = 1
-            if epoch % decay_step == 0 and epoch:
-                return lr * pow(decay_rate, np.floor(epoch / decay_step))
-            return lr
-        scheduler_callback = keras.callbacks.LearningRateScheduler(lr_schedule, verbose=1)
-
-        callbacks = [tensorboard_callback]
+        callbacks = [tensorboard_callback, earlystopping_callback, checkpointer_callback]
         
         learning_rate = learning_rate_schedule.get(num_unfrozen_blocks, LEARNING_RATE)
         optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
-        # optimizer = keras.optimizers.SGD(learning_rate=learning_rate, momentum=MOMENTUM)
         bce = keras.losses.BinaryCrossentropy(from_logits=False)
         auc = keras.metrics.AUC(
             curve='ROC',
@@ -401,7 +439,7 @@ def main(argv):
         if MODE != 'eval':
             # Unfreeze blocks (if needed)
             if num_unfrozen_blocks > 0:
-                unfreeze_layers(model, TOTAL_CONV_BLOCKS, num_unfrozen_blocks)
+                unfreeze_layers(model, num_unfrozen_blocks)
             print_log(f'Unfreezing {num_unfrozen_blocks} blocks...')
             print_log(f'Total trainable weights: {len(model.trainable_weights)}')
             for weight in model.trainable_weights:
@@ -431,7 +469,7 @@ def main(argv):
             
             print_log('\n------------------ Training ------------------')
             # Train with newly unfrozen blocks
-            duration, history = perform_training(model, train_tfds, train_tfds, callbacks, EPOCHS, BATCH_SIZE)
+            duration, history = perform_training(model, train_tfds, val_tfds, callbacks, EPOCHS, BATCH_SIZE)
             print_log('\n------------------ Training Round Summary ------------------')
             log_training_progress(duration, history, figs_dir)
             
@@ -453,15 +491,15 @@ def main(argv):
     
     print_log('\n------------------ Evaluate ------------------')
     
-    # del train_tfds
-    # del val_tfds
-    # test_tfds = test_tfds.shuffle(buffer_size=10*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    del train_tfds
+    del val_tfds
+    test_tfds = test_tfds.shuffle(buffer_size=10*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
     
-    for f, l in train_tfds.take(1):
+    for f, l in test_tfds.take(1):
         show_prediction(f, l, model, main_out_dir)
 
     log_eval_metrics(
-        dataset=train_tfds,
+        dataset=test_tfds,
         model=model,
         metrics=[bce, auc, macro_f1_score, soft_f1_loss, global_accuracy, global_precision, global_recall])
     

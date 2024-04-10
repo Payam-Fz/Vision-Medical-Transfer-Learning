@@ -201,6 +201,7 @@ def main(argv):
     MAX_UNFREEZE_BLOCKS = min(_MAX_UNFREEZE_BLOCKS.value, TOTAL_CONV_BLOCKS)
     assert MIN_UNFREEZE_BLOCKS <= MAX_UNFREEZE_BLOCKS, 'Invalid Min and Max Unfrozen blocks specified'
     
+    ES_PATIENCE = 3
     learning_rate_schedule = {
         0: 1e-4,
         1: 1e-5,
@@ -223,7 +224,8 @@ def main(argv):
     print_log(f'Batch size: {BATCH_SIZE}')
     print_log(f'Image size: {IMAGE_SIZE}')
     print_log(f'Max Epochs per training round: {EPOCHS}')
-    print_log(f'Default Learning Rate: {LEARNING_RATE}')
+    print_log(f'Learning Rate: {learning_rate_schedule}')
+    print_log(f'Early Stopping Patience: {ES_PATIENCE}')
     print_log(f'\nGPUs: {tf.config.list_physical_devices("GPU")}')
     print_log(f'CPUs: {tf.config.list_physical_devices("CPU")}')
 
@@ -267,8 +269,7 @@ def main(argv):
 
     @tf.function
     def _preprocess_train(x, y, info=None):
-        x = preprocess_image(x, *IMAGE_SIZE,
-            is_training=True, color_distort=True, crop='Random')
+        x = preprocess_image(x, *IMAGE_SIZE, is_training=True, probability=0.4, v2=True)
         x = tf.image.convert_image_dtype(x, dtype=tf.uint8)
         x = tf.keras.applications.resnet50.preprocess_input(x)
         x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
@@ -277,8 +278,7 @@ def main(argv):
 
     @tf.function
     def _preprocess_val(x, y, info=None):
-        x = preprocess_image(x, *IMAGE_SIZE,
-            is_training=False, color_distort=False, crop='Center')
+        x = preprocess_image(x, *IMAGE_SIZE, is_training=False)
         x = tf.image.convert_image_dtype(x, dtype=tf.uint8)
         x = tf.keras.applications.resnet50.preprocess_input(x)
         x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
@@ -346,7 +346,7 @@ def main(argv):
             mode='min',
             verbose=1,
             # min_delta=0.001,   # how much change is considered an improvement
-            patience=3,
+            patience=ES_PATIENCE,
             start_from_epoch=0)
         checkpointer_callback = keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(checkpoint_dir, 'epoch-{epoch:02d}_valloss-{val_loss:.4f}.ckpt'),

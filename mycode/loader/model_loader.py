@@ -1,6 +1,8 @@
 import os
 import tensorflow as tf
 import tensorflow_hub as hub
+import zipfile
+from tensorflow import keras
 from set_path import get_proj_path
 
 
@@ -60,3 +62,12 @@ def load_model(name, path, loader="hub", input_shape=None, show_summary=False):
             # layer.summary()
     
     return model
+
+def load_zipped_model(model_path: str):
+    with zipfile.ZipFile(model_path, "r") as zip_ref:
+        zip_ref.extractall("Probing_ViTs/")
+    model_name = model_path.split(".")[0]
+
+    print('model_name', model_name)
+
+    base_vit = load_model('base_vit', model_path, 'keras', input_shape, True)
