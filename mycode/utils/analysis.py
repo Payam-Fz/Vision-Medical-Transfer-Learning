@@ -151,12 +151,12 @@ def perf_grid(ds, target, label_names, model, n_thresh=100):
     return grid
 
 
-def show_prediction(image, gt, model, fig_path):
+def show_prediction(image, gt, y_pred, fig_path):
     batch_size = len(image)
     # mlb = MultiLabelBinarizer()
     # Generate prediction
-    prediction = model.predict(image)
-    prediction = np.round(prediction, 5)
+    # prediction = model.predict(image)
+    prediction = np.round(y_pred, 5)
     # prediction = pd.Series(prediction[0])
     # prediction.index = mlb.classes_
     # prediction = prediction[prediction==1].index.values

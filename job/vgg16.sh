@@ -1,9 +1,9 @@
 #!/bin/bash
 # a file for job output, you can check job progress
-#SBATCH --output=../out/job_logs/vgg16-gradual-1-4_%j.out
+#SBATCH --output=../out/job_logs/vgg16-all-unfrozen_%j.out
 
 # a file for errors
-#SBATCH --error=../out/job_logs/vgg16-gradual-1-4_%j.err
+#SBATCH --error=../out/job_logs/vgg16-all-unfrozen_%j.err
 
 # select the node edith
 #SBATCH --partition=edith
@@ -65,7 +65,7 @@ export XLA_FLAGS=--xla_gpu_cuda_data_dir=$PROJPATH/mycode
 
 # ---------- FULL TRAIN ----------- #
 python $PROJPATH/mycode/neural_nets/vgg16.py \
-    --ouput_name=vgg16-gradual-1-4 \
+    --ouput_name=vgg16-all-unfrozen \
     --learning_rate=1e-5 --image_size=224 --epochs=30 --batch_size=64 --train_size=65536 \
-    --mode=train_then_eval --min_unfreeze_blocks=1 --max_unfreeze_blocks=4 \
-    --load_checkpoint=./out/vgg16-gradual-fix-color_2024-04-03_0941/0_unfrozen_block/model/checkpoints
+    --mode=train_then_eval --min_unfreeze_blocks=5 --max_unfreeze_blocks=5 \
+    --load_checkpoint=./out_archive/vgg16_final/vgg16-gradual-1-4_2024-04-04_1118/4_unfrozen_block/model/checkpoints

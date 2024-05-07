@@ -102,7 +102,6 @@ if gpus:
         print(e)
 
 class BaseModel(keras.Model):
-    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.writer = None
@@ -256,7 +255,7 @@ def main(argv):
 
     elif DATASET == 'MIMIC-CXR':
         # max size: {'train': 360000, 'validate': 2900, 'test': 0}
-        data_loader = MIMIC_CXR_JPG_Loader({'train': TRAIN_SIZE, 'validate': 2900, 'test': 512}, PROJ_PATH)
+        data_loader = MIMIC_CXR_JPG_Loader({'train': TRAIN_SIZE, 'validate': 2900, 'test': 4096}, PROJ_PATH)
         train_tfds, val_tfds, test_tfds = data_loader.load(['has_label', 'frontal_view', 'unambiguous_label'])
         num_classes = data_loader.info()['num_classes']
         
@@ -266,12 +265,10 @@ def main(argv):
     else:
         raise Exception('The Data Type specified does not have data loading defined.')
 
-
+    
     @tf.function
     def _preprocess_train(x, y, info=None):
-        x = preprocess_image(x, *IMAGE_SIZE, is_training=True, probability=0.4, v2=True)
-        x = tf.image.convert_image_dtype(x, dtype=tf.uint8)
-        x = tf.keras.applications.resnet50.preprocess_input(x)
+        x = preprocess_image(x, *IMAGE_SIZE, is_training=True, probability=0.4, v2=False)
         x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
         y = tf.ensure_shape(y, [num_classes])
         return x, y
@@ -279,19 +276,33 @@ def main(argv):
     @tf.function
     def _preprocess_val(x, y, info=None):
         x = preprocess_image(x, *IMAGE_SIZE, is_training=False)
-        x = tf.image.convert_image_dtype(x, dtype=tf.uint8)
-        x = tf.keras.applications.resnet50.preprocess_input(x)
         x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
         y = tf.ensure_shape(y, [num_classes])
         return x, y
 
-    train_tfds = train_tfds.map(_preprocess_train, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-    train_tfds = train_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
-    val_tfds = val_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-    val_tfds = val_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+    @tf.function
+    def _match_model_input(x, y, info=None, batched=False):
+        x = tf.image.convert_image_dtype(x, dtype=tf.uint8)
+        x = tf.keras.applications.resnet50.preprocess_input(x)
+        if (batched):
+            x = tf.ensure_shape(x, [None,*IMAGE_SIZE,3])
+            y = tf.ensure_shape(y, [None,num_classes])
+        else:
+            x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
+            y = tf.ensure_shape(y, [num_classes])
+        return x, y
+
+
+    train_tfds = train_tfds.map(_preprocess_train, num_parallel_calls=tf.data.experimental.AUTOTUNE).map(_match_model_input, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    val_tfds = val_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE).map(_match_model_input, num_parallel_calls=tf.data.experimental.AUTOTUNE)
     test_tfds = test_tfds.map(_preprocess_val, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    if MODE != 'eval':
+        train_tfds = train_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
+        val_tfds = val_tfds.shuffle(buffer_size=2*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
 
     for f, l in train_tfds.take(1):
+        print_log('max value after preprocess',tf.reduce_max(f))
+        print_log('min value after preprocess',tf.reduce_min(f))
         print_log("Shape of image batch:", f.shape.as_list())
         print_log("Shape of labels batch:", l.shape.as_list())
 
@@ -430,8 +441,14 @@ def main(argv):
     test_tfds = test_tfds.shuffle(buffer_size=10*BATCH_SIZE).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
     
     for f, l in test_tfds.take(1):
-        show_prediction(f, l, model, main_out_dir)
+        f_norm_matched, _ = _match_model_input(f,l, batched=True)
+        y_pred = model.predict(f_norm_matched)
+        show_prediction(f, l, y_pred, main_out_dir)
 
+    test_tfds = test_tfds.map(
+        lambda x, y: _match_model_input(x,y, batched=True),
+        num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    
     log_eval_metrics(
         dataset=test_tfds,
         model=model,

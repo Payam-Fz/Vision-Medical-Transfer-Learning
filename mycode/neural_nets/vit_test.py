@@ -31,6 +31,7 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 import tensorflow_hub as hub
+from transformers import TFViTModel, ViTImageProcessor, AutoImageProcessor
 
 from utils.augmentation import preprocess_image
 from utils.log import get_curr_datetime, print_time, print_log
@@ -128,43 +129,65 @@ class BaseModel(keras.Model):
             for metric in self.compiled_metrics.metrics:
                 tf.summary.scalar(metric.name, metric.result())
             tf.summary.scalar('loss', loss)
-            tf.summary.image('input_image', x, max_outputs=10)
+            display_image = to_channels_last(x, include_batch=True)
+            tf.summary.image('input_image', display_image, max_outputs=10)
         
         return self.compute_metrics(x, y, y_pred, None)
 
-def mlp(x, hidden_units, dropout_rate):
-    for units in hidden_units:
-        x = layers.Dense(units, activation=keras.activations.relu)(x)
-        x = layers.Dropout(dropout_rate)(x)
-    return x
 
-def transformer_block(encoded_patches, projection_dim, num_heads, mlp_units):
-    # Layer normalization 1.
-    x1 = layers.LayerNormalization(epsilon=1e-6)(encoded_patches)
-    # Create a multi-head attention layer.
-    attention_output = layers.MultiHeadAttention(
-        num_heads=num_heads, key_dim=projection_dim, dropout=0.1
-    )(x1, x1)
-    # Skip connection 1.
-    x2 = layers.Add()([attention_output, encoded_patches])
-    # Layer normalization 2.
-    x3 = layers.LayerNormalization(epsilon=1e-6)(x2)
-    # MLP.
-    x3 = mlp(x3, hidden_units=mlp_units, dropout_rate=0.1)
-    # Skip connection 2.
-    out = layers.Add()([x3, x2])
-    return out
+def to_channels_last(img, include_batch, label=None):
+    if include_batch:
+        order = [0, 2, 3, 1]
+    else:
+        order = [1, 2, 0]
+    if label is None:
+        return tf.transpose(img, order)
+    else:
+        return tf.transpose(img, order), label
+
+def to_channels_first(img, label=None):
+    if label is None:
+        return tf.transpose(img, [2, 0, 1])
+    else:
+        return tf.transpose(img, [2, 0, 1]), label
+
+class ViTPoolerLayer(tf.keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.dense = tf.keras.layers.Dense(
+            units=768,
+            kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02),
+            activation="tanh",
+            name="dense",
+        )
+
+    def call(self, hidden_states: tf.Tensor) -> tf.Tensor:
+        # We "pool" the model by simply taking the hidden state corresponding
+        # to the first token.
+        first_token_tensor = hidden_states[:, 0]
+        pooled_output = self.dense(inputs=first_token_tensor)
+
+        return pooled_output
+
+
 
 def create_vit(input_shape, num_classes):
-    base_vit = hub.KerasLayer(
-        "https://www.kaggle.com/models/spsayakpaul/vision-transformer/TensorFlow2/vit-b16-fe/1",
-        trainable=False,
-    )
-    base_vit.trainable = False
+    base_model = TFViTModel.from_pretrained('google/vit-base-patch16-224-in21k')
+    base_model.trainable = False
+    
+    inputs = keras.Input(input_shape, name='my_input', dtype='float32')
+    
+    # Type 1 @ https://www.kaggle.com/code/ineersa/vit-transformer
+    # pooler = ViTPoolerLayer()
+    # vit_output = base_model.vit(inputs)[0]
+    # vit_output = pooler(vit_output)
 
-    inputs = keras.Input(input_shape, name='my_input')
-    base_output = base_vit(inputs)
-    x = layers.Dense(256, activation='relu', name='my_fc_1')(base_output)
+    # Type 2 @ https://www.philschmid.de/image-classification-huggingface-transformers-keras
+    vit_output = base_model.vit(inputs)[0][:, 0, :]
+    
+    
+    x = layers.Dense(256, activation='relu', name='my_fc_1')(vit_output)
     x = layers.Dense(128, activation='relu', name='my_fc_2')(x)
     x = layers.Dense(num_classes, activation='sigmoid', name='my_output')(x)
     model = BaseModel(inputs=inputs, outputs=x, name='my_vit')
@@ -174,8 +197,7 @@ def create_vit(input_shape, num_classes):
 def unfreeze_layers(model, unfreeze_blocks_count):
     # For ViT, unfreeze the whole model
     if (unfreeze_blocks_count > 0):
-        for layer in model.layers:
-            layer.trainable = True
+        model.get_layer('vit').trainable = True
 
 def perform_training(model, train_tfds, val_tfds, callbacks, epochs, batch_size):
     start = time()
@@ -336,24 +358,45 @@ def main(argv):
     #     x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
     #     y = tf.ensure_shape(y, [num_classes])
     #     return x, y
+    
+    # image_processor = ViTImageProcessor(do_normalize=True)
+    image_processor = AutoImageProcessor.from_pretrained('google/vit-base-patch16-224-in21k')
 
+    @tf.function
     def _preprocess_val(x, y, info=None):
         x = preprocess_image(x, *IMAGE_SIZE, is_training=False)
+        # x = layers.Normalization(mean=[0.485, 0.456, 0.406], variance=[0.229, 0.224, 0.225])(x) #ImageNet default
         x = tf.image.convert_image_dtype(x, dtype=tf.uint8) # scales image to 0-255 # in range
+        x = tf.keras.applications.imagenet_utils.preprocess_input(x)
+        x = tf.image.convert_image_dtype(x, dtype=tf.float32)
         # x = tf.multiply(x, 255.0)   # still in range
         # x = tf.keras.applications.resnet50.preprocess_input(x) # keeps type and range correct
         # x = tf.cast(x, tf.float32)  # only converts type without scaling
-        x = tf.keras.applications.imagenet_utils.preprocess_input(x)  # scales to 0-1 float32 # goes off if float is passed
+        # x = tf.keras.applications.imagenet_utils.preprocess_input(x)  # scales to 0-1 float32 # goes off if float is passed
         # x = tf.divide(x, 255.0)
         
+        # x = tf.make_ndarray(tf.make_tensor_proto(x))
+        # x = image_processor.preprocess(
+        #     x.numpy(),
+        #     return_tensors="tf",
+        #     input_data_format="channels_last",
+        #     data_format="channels_first")
+        # x = image_processor(x, return_tensors="tf")
+        # x = tf.keras.applications.imagenet_utils.preprocess_input(x)
+        # x = tf.image.convert_image_dtype(x, dtype=tf.float32)
+        # x = tf.subtract(tf.multiply(x, 2.0), 1.0)
+        x = to_channels_first(x)
         
-        x = tf.image.convert_image_dtype(x, dtype=tf.float32) # scales image to 0.0-1.0 # in range
-        x = tf.subtract(tf.multiply(x, 2.0), 1.0)
+        x = tf.ensure_shape(x, [3, *IMAGE_SIZE])
+        y = tf.ensure_shape(y, [num_classes])
+        
+        # x = tf.image.convert_image_dtype(x, dtype=tf.float32) # scales image to 0.0-1.0 # in range
+        # x = tf.subtract(tf.multiply(x, 2.0), 1.0)
         
         
         # x = tf.clip_by_value(x, -1.0, 1.0)
-        x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
-        y = tf.ensure_shape(y, [num_classes])
+        # x = tf.ensure_shape(x, [*IMAGE_SIZE,3])
+        # y = tf.ensure_shape(y, [num_classes])
         return x, y
 
     for f, l, info in train_tfds.take(1):
@@ -375,7 +418,7 @@ def main(argv):
     
     #------------------- CREATE MODEL -------------------#
     
-    model = create_vit((*IMAGE_SIZE,CHANNELS), num_classes)
+    model = create_vit((CHANNELS, *IMAGE_SIZE), num_classes) # NOTE: vit model needs channel first
     print(model.summary())
     
     is_first_round = True
@@ -503,7 +546,9 @@ def main(argv):
     print_log('\n------------------ Evaluate ------------------')
     
     for f, l in train_tfds.take(1):
-        show_prediction(f, l, model, main_out_dir)
+        y_pred = model(f)
+        f = to_channels_last(f, include_batch=True)
+        show_prediction(f, l, y_pred, main_out_dir)
 
     log_eval_metrics(
         dataset=train_tfds,

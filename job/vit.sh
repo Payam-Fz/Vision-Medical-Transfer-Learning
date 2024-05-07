@@ -1,9 +1,9 @@
 #!/bin/bash
 # a file for job output, you can check job progress
-#SBATCH --output=../out/job_logs/vit-test-unfreeze_%j.out
+#SBATCH --output=../out/job_logs/vit-hf-augment_%j.out
 
 # a file for errors
-#SBATCH --error=../out/job_logs/vit-test-unfreeze_%j.err
+#SBATCH --error=../out/job_logs/vit-hf-augment_%j.err
 
 # select the node edith
 #SBATCH --partition=edith
@@ -32,7 +32,7 @@
 MYHOME=/ubc/cs/research/shield/projects/payamfz
 PROJPATH=$MYHOME/medical-ssl-segmentation
 
-conda activate tf2-gpu
+conda activate tf2-gpu-hf
 
 export CUDA_DIR=$PROJPATH/mycode
 export XLA_FLAGS=--xla_gpu_cuda_data_dir=$PROJPATH/mycode
@@ -58,14 +58,14 @@ export XLA_FLAGS=--xla_gpu_cuda_data_dir=$PROJPATH/mycode
 #     --load_checkpoint=./out_archive/vit-fixed-loss-memory/vit-unfreeze_2024-03-24_2251/model/checkpoints
 
 # ---------- TEST ----------- #
-python $PROJPATH/mycode/neural_nets/vit.py \
-    --ouput_name=vit-test-unfreeze \
-    --learning_rate=1e-4 --image_size=224 --epochs=2 --batch_size=64 --train_size=256 \
-    --mode=train_then_eval --min_unfreeze_blocks=1 --max_unfreeze_blocks=1
+# python $PROJPATH/mycode/neural_nets/vit.py \
+#     --ouput_name=vit-test-unfreeze \
+#     --learning_rate=1e-4 --image_size=224 --epochs=2 --batch_size=64 --train_size=256 \
+#     --mode=train_then_eval --min_unfreeze_blocks=1 --max_unfreeze_blocks=1
 
 # ---------- FULL TRAIN ----------- #
 
-# python $PROJPATH/mycode/neural_nets/vit.py \
-#     --ouput_name=vit-gradual \
-#     --learning_rate=1e-4 --image_size=224 --epochs=30 --batch_size=64 --train_size=65536 \
-#     --mode=train_then_eval --min_unfreeze_blocks=0 --max_unfreeze_blocks=1
+python $PROJPATH/mycode/neural_nets/vit_hf.py \
+    --ouput_name=vit-gradual-hf-augment \
+    --learning_rate=1e-4 --image_size=224 --epochs=30 --batch_size=64 --train_size=65536 \
+    --mode=train_then_eval --min_unfreeze_blocks=0 --max_unfreeze_blocks=1
